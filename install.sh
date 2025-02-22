@@ -19,6 +19,26 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+# ====== Helpers ===============================================================
+
+function last_command_failed() {
+    if [ $? -ne 0 ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
 # ==============================================================================
 
-echo "hello world"
+# 0) todo: automate image verification before install - is it possible?
+
+# 1) Check Internet connection
+echo "[--] Checking internet connection..."
+ping -c 4 google.com > /dev/null 2>&1
+if last_command_failed; then
+    echo "[ER] No internet connection -> abort"
+    exit 1
+else
+    echo "[OK] Internet connection is established"
+fi
