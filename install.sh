@@ -20,7 +20,13 @@
 # SOFTWARE.
 
 # ====== Constants =============================================================
-
+TIME_ZONE_REGION="Europe/Kyiv"
+LOCALES=(
+"en_US.UTF-8"
+"uk_UA.UTF-8"
+"ru_RU.UTF-8")
+LOCALE_LANG="uk_UA.UTF-8"
+LOCALE_LC_MESSAGES="en_US.UTF-8"
 
 # ====== Variables =============================================================
 PARTITION_BOOT=""
@@ -101,8 +107,7 @@ fi
 echo "[--] Checking internet connection..."
 # ping -c 4 google.com > /dev/null 2>&1
 if last_command_failed; then
-    echo "[ER] No internet connection -> abort"
-    exit 1
+    echo "[ER] No internet connection -> abort"; exit 1
 fi
 
 echo "[OK] Internet connection is established"
@@ -115,14 +120,12 @@ lsblk -pdno NAME,SIZE,TYPE | grep 'disk'
 read -p "[--] Enter the disk to use (e.g., /dev/sda): " DESTINATION_DISK 
 
 if [ -z $DESTINATION_DISK ]; then
-    echo "[ER] '$DESTINATION_DISK' doesn't exist"
-    exit 1
+    echo "[ER] '$DESTINATION_DISK' doesn't exist"; exit 1
 fi
 
 ls $DESTINATION_DISK > /dev/null 2>&1
 if last_command_failed; then
-    echo "[ER] '$DESTINATION_DISK' doesn't exist"
-    exit 1
+    echo "[ER] '$DESTINATION_DISK' doesn't exist"; exit 1
 fi
 
 PARTITION_BOOT="${DESTINATION_DISK}1"
@@ -170,21 +173,18 @@ swapon "${PARTITION_SWAP}" >> /dev/null
 mkfs.btrfs -f "${PARTITION_ROOT}" >> /dev/null
 
 if ! is_partition_successful; then
-    echo "[ER] Abort"
-    exit 1
+    echo "[ER] Abort"; exit 1
 fi
 
 # 2.4) --- Mount ---------------------------------------------------------------
 mount -o noatime,compress-force=zstd:2,space_cache=v2 $PARTITION_ROOT /mnt >> /dev/null
 if last_command_failed; then
-    echo "[ER] '$PARTITION_ROOT' failed to mount"
-    exit 1
+    echo "[ER] '$PARTITION_ROOT' failed to mount"; exit 1
 fi
 
 mount --mkdir $PARTITION_BOOT /mnt/boot >> /dev/null
 if last_command_failed; then
-    echo "[ER] '$PARTITION_BOOT' failed to mount"
-    exit 1
+    echo "[ER] '$PARTITION_BOOT' failed to mount"; exit 1
 fi
 
 echo "[OK] Disk partitions have been created and mounted"
@@ -200,23 +200,56 @@ echo
 echo "[--] Installing kernel..."
 pacstrap -K /mnt base linux linux-firmware >> /dev/null
 if last_command_failed; then
-    echo "[ER] Failed to install Linux kernel -> abort"
-    exit 1
+    echo "[ER] Failed to install Linux kernel -> abort"; exit 1
 fi
 echo "[OK] Stable kernel has been installed"
 echo
 
 # 5) === System configuring ====================================================
-
+# 5.1) --- fstab ---------------------------------------------------------------
 echo "[--] Generating fstab..."
 genfstab -U /mnt >> /mnt/etc/fstab
 if last_command_failed; then
-    echo "[ER] Failed to install Linux kernel -> abort"
-    exit 1
+    echo "[ER] Failed to generate fstab"; exit 1
 fi
 echo "[OK] fstab has been generated"
 echo
 
+# switch root
 arch-chroot /mnt
 
+# 5.2) --- time ----------------------------------------------------------------
+echo "[--] Setting up time..."
+ln -sf /usr/share/zoneinfo/${TIME_ZONE_REGION} /etc/localtime
+if last_command_failed; then
+    echo "[ER] Failed to set time zone"; exit 1
+fi
+hwclock --systohc
+if last_command_failed; then
+    echo "[ER] Failed to set time zone"; exit 1
+fi
+echo "[OK] Time has been set"
+
+# 5.3) --- localization --------------------------------------------------------
+echo "[--] Setting up localization..."
+for i in "${LOCALES[@]}"; do
+    sed -i "s/#${i}/${i}/g" /etc/local.gen
+done
+
+locale-gen
+
+for i in "${LOCALES[@]}"; do
+    to_check=${i}
+    to_check=${to_check/UTF-8/utf8}
+    if ! locale -a | grep -q "^${to_check}$"; then
+        echo "[ER] ${i} is not generated"; exit 1
+    fi
+done
+
+echo "LANG=${LOCALE_LANG}" >> "/etc/locale.conf"
+echo "LC_MESSAGES=${LOCALE_LANG}" >> "/etc/locale.conf"
+
+# todo: add keyboard layouts after installing KDE
+
+echo "[OK] Localization has been set"
 
