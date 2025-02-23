@@ -215,16 +215,13 @@ fi
 echo "[OK] fstab has been generated"
 echo
 
-# switch root
-arch-chroot /mnt
-
 # 5.2) --- time ----------------------------------------------------------------
 echo "[--] Setting up time..."
-ln -sf /usr/share/zoneinfo/${TIME_ZONE_REGION} /etc/localtime
+ln -sf /mnt/usr/share/zoneinfo/${TIME_ZONE_REGION} /mnt/etc/localtime
 if last_command_failed; then
     echo "[ER] Failed to set time zone"; exit 1
 fi
-hwclock --systohc
+arch-chroot /mnt bash -c "hwclock --systohc"
 if last_command_failed; then
     echo "[ER] Failed to set time zone"; exit 1
 fi
@@ -233,32 +230,42 @@ echo "[OK] Time has been set"
 # 5.3) --- localization --------------------------------------------------------
 echo "[--] Setting up localization..."
 for i in "${LOCALES[@]}"; do
-    sed -i "s/#${i}/${i}/g" /etc/local.gen
+    sed -i "s/#${i}/${i}/g" /mnt/etc/local.gen
 done
 
-locale-gen
+arch-chroot /mnt bash -c "locale-gen"
 
 for i in "${LOCALES[@]}"; do
     to_check=${i}
     to_check=${to_check/UTF-8/utf8}
-    if ! locale -a | grep -q "^${to_check}$"; then
+    if ! arch-chroot /mnt bash -c "locale -a" | grep -q "^${to_check}$"; then
         echo "[ER] ${i} is not generated"; exit 1
     fi
 done
 
-echo "LANG=${LOCALE_LANG}" >> "/etc/locale.conf"
-echo "LC_MESSAGES=${LOCALE_LANG}" >> "/etc/locale.conf"
+echo "LANG=${LOCALE_LANG}" >> "/mnt/etc/locale.conf"
+echo "LC_MESSAGES=${LOCALE_LANG}" >> "/mnt/etc/locale.conf"
 
 # todo: add keyboard layouts after installing KDE
 
 echo "[OK] Localization has been set"
 
+# 5.4) --- hostname ------------------------------------------------------------
+read -p "[--] Set hostname: " HOSTNAME
+echo "${HOSTNAME}" >> /mnt/etc/hostname
+if last_command_failed; then
+    echo "[ER] Failed to set hostname"; exit 1
+fi
+echo "[OK] Hostname has been set"
 
-
-
+# 5.4) --- passwd --------------------------------------------------------------
+echo "[--] Set root password"
+passwd
+if last_command_failed; then
+    echo "[ER] Failed to set root password"; exit 1
+fi
 
 # exit cleanup
-exit
 umount /mnt/boot
 umount /mnt
 
