@@ -253,3 +253,12 @@ echo "LC_MESSAGES=${LOCALE_LANG}" >> "/etc/locale.conf"
 
 echo "[OK] Localization has been set"
 
+
+
+
+
+# exit cleanup
+exit
+umount /mnt/boot
+umount /mnt
+
