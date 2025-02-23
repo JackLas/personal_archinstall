@@ -147,17 +147,24 @@ if is_uefi_boot_mode; then
     # /boot partition (1GB, FAT32 for UEFI)
     parted -s "$DESTINATION_DISK" mkpart primary fat32 1MiB 1GiB >> /dev/null
     parted -s "$DESTINATION_DISK" set 1 esp on >> /dev/null
+
+        # Swap partition (8GB)
+    parted -s "$DESTINATION_DISK" mkpart primary linux-swap 1GiB 9GiB >> /dev/null
+    # Root (/) partition (Btrfs, using remaining space)
+    parted -s "$DESTINATION_DISK" mkpart primary btrfs 9GiB 100% >> /dev/null
 else
     # Create MBR partition table
     parted -s "$DESTINATION_DISK" mklabel msdos >> /dev/null >> /dev/null
-    # /boot partition (1GB, EXT4 for BIOS)
-    parted -s "$DESTINATION_DISK" mkpart primary ext4 1MiB 1GiB >> /dev/null
-fi
+    # /boot partition 1MiB for grub and +1 MiB for potential bootloader files
+    parted -s "$DESTINATION_DISK" mkpart primary 1MiB 3MiB >> /dev/null
+    parted -s "$DESTINATION_DISK" set 1 boot on
+    parted -s "$DESTINATION_DISK" name 1 BIOSboot
 
-# Swap partition (8GB)
-parted -s "$DESTINATION_DISK" mkpart primary linux-swap 1GiB 9GiB >> /dev/null
-# Root (/) partition (Btrfs, using remaining space)
-parted -s "$DESTINATION_DISK" mkpart primary btrfs 9GiB 100% >> /dev/null
+    # Swap partition (8GB)
+    parted -s "$DESTINATION_DISK" mkpart primary linux-swap 3MiB 8195MiB >> /dev/null
+    # Root (/) partition (Btrfs, using remaining space)
+    parted -s "$DESTINATION_DISK" mkpart primary btrfs 8195MiB 100% >> /dev/null
+fi
 
 # 2.3) --- Format --------------------------------------------------------------
 # Format boot
@@ -190,13 +197,13 @@ fi
 echo "[OK] Disk partitions have been created and mounted"
 echo
 
-# 3) === Update mirrors ===============================================================
+# 3) === Update mirrors ========================================================
 echo "[--] Updating mirrors..."
 reflector >> /dev/null
 echo "[OK] Mirrors have been updated"
 echo
 
-# 4) === Install kernel ================================================================
+# 4) === Install kernel ========================================================
 echo "[--] Installing kernel..."
 pacstrap -K /mnt base linux linux-firmware >> /dev/null
 if last_command_failed; then
@@ -221,7 +228,7 @@ ln -sf /mnt/usr/share/zoneinfo/${TIME_ZONE_REGION} /mnt/etc/localtime
 if last_command_failed; then
     echo "[ER] Failed to set time zone"; exit 1
 fi
-arch-chroot /mnt bash -c "hwclock --systohc"
+arch-chroot /mnt bash -c "hwclock --systohc" >> /dev/null
 if last_command_failed; then
     echo "[ER] Failed to set time zone"; exit 1
 fi
@@ -233,7 +240,7 @@ for i in "${LOCALES[@]}"; do
     sed -i "s/#${i}/${i}/g" /mnt/etc/locale.gen
 done
 
-arch-chroot /mnt bash -c "locale-gen"
+arch-chroot /mnt bash -c "locale-gen" >> /dev/null
 
 for i in "${LOCALES[@]}"; do
     to_check=${i}
@@ -244,7 +251,7 @@ for i in "${LOCALES[@]}"; do
 done
 
 echo "LANG=${LOCALE_LANG}" >> "/mnt/etc/locale.conf"
-echo "LC_MESSAGES=${LOCALE_LANG}" >> "/mnt/etc/locale.conf"
+echo "LC_MESSAGES=${LOCALE_LC_MESSAGES}" >> "/mnt/etc/locale.conf"
 
 # todo: add keyboard layouts after installing KDE
 
@@ -260,12 +267,52 @@ echo "[OK] Hostname has been set"
 
 # 5.4) --- passwd --------------------------------------------------------------
 echo "[--] Set root password"
-passwd
+arch-chroot /mnt bash -c "passwd"
 if last_command_failed; then
     echo "[ER] Failed to set root password"; exit 1
 fi
+echo "[OK] root password has been set"
+
+# 5.5) --- grub boot loader with timeshift support -----------------------------
+echo "[--] Installing grub with timeshift support..."
+arch-chroot /mnt bash -c "pacman -S --noconfirm grub efibootmgr grub-btrfs timeshift"
+if last_command_failed; then
+    echo "[ER] Failed to install grub and timeshift"; exit 1
+fi
+
+GRUB_INSTALL_PARAMS=""
+if is_uefi_boot_mode; then
+    GRUB_INSTALL_PARAMS="--target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB"
+    # todo: handle 32-bit IA32 UEFI here - do I need it???
+else
+    : # todo bios
+fi
+if [ -z "${GRUB_INSTALL_PARAMS}" ]; then
+    echo "[ER] Undefined grub install parameters"; exit 1
+fi
+
+arch-chroot /mnt bash -c "grub-install ${GRUB_INSTALL_PARAMS}"
+if last_command_failed; then
+    echo "[ER] Failed to install grub"; exit 1
+fi
+
+
+arch-chroot /mnt bash -c "timeshift --create --comments "Initial snapshot" --tags D"
+if last_command_failed; then
+    echo "[ER] Failed to create initial timeshift snapshot"; exit 1
+fi
+echo "GRUB_ENABLE_BTRFS=\"true\"" >> /mnt/etc/default/grub
+sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT=.*$/GRUB_CMDLINE_LINUX_DEFAULT=\"quiet btrfs.root=$(blkid -o value -s PARTUUID ${PARTITION_ROOT})\"/" /mnt/etc/default/grub
+
+arch-chroot /mnt bash -c "grub-mkconfig -o /boot/grub/grub.cfg"
+if last_command_failed; then
+    echo "[ER] Failed to make grub config"; exit 1
+fi
+
+echo "[OK] Grub with timeshift support has been installed"
 
 # exit cleanup
 umount /mnt/boot
 umount /mnt
 
+printf "\n\nReboot!!!"
