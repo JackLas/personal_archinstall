@@ -1,16 +1,16 @@
 #!/usr/bin/bash
 # Copyright (c) 2025 Yevhenii Kryvyi
-
+#
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
 # in the Software without restriction, including without limitation the rights
 # to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 # copies of the Software, and to permit persons to whom the Software is
 # furnished to do so, subject to the following conditions:
-
+#
 # The above copyright notice and this permission notice shall be included in all
 # copies or substantial portions of the Software.
-
+#
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 # IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 # FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -21,21 +21,13 @@
 
 # ====== Constants =============================================================
 
-# ====== Errors ================================================================
-ERR_INTERNET=1
-ERR_DISK=2
-ERR_PARTITION=3
-ERR_MOUNT=4
-ERR_KERNEL=4
 
 # ====== Variables =============================================================
-
 PARTITION_BOOT=""
 PARTITION_SWAP=""
 PARTITION_ROOT=""
 
 # ====== Helpers ===============================================================
-
 function last_command_failed() {
     if [ $? -eq 0 ]; then
         return 1
@@ -110,7 +102,7 @@ echo "[--] Checking internet connection..."
 # ping -c 4 google.com > /dev/null 2>&1
 if last_command_failed; then
     echo "[ER] No internet connection -> abort"
-    exit $ERR_INTERNET
+    exit 1
 fi
 
 echo "[OK] Internet connection is established"
@@ -124,13 +116,13 @@ read -p "[--] Enter the disk to use (e.g., /dev/sda): " DESTINATION_DISK
 
 if [ -z $DESTINATION_DISK ]; then
     echo "[ER] '$DESTINATION_DISK' doesn't exist"
-    exit $ERR_DISK
+    exit 1
 fi
 
 ls $DESTINATION_DISK > /dev/null 2>&1
 if last_command_failed; then
     echo "[ER] '$DESTINATION_DISK' doesn't exist"
-    exit $ERR_DISK
+    exit 1
 fi
 
 PARTITION_BOOT="${DESTINATION_DISK}1"
@@ -164,56 +156,67 @@ parted -s "$DESTINATION_DISK" mkpart primary linux-swap 1GiB 9GiB >> /dev/null
 # Root (/) partition (Btrfs, using remaining space)
 parted -s "$DESTINATION_DISK" mkpart primary btrfs 9GiB 100% >> /dev/null
 
-# 2.3) --- Formating -----------------------------------------------------------
+# 2.3) --- Format --------------------------------------------------------------
 # Format boot
 if is_uefi_boot_mode; then
-    mkfs.fat -F32 "${PARTITION_BOOT}"  >> /dev/null
+    mkfs.fat -F32 "${PARTITION_BOOT}" >> /dev/null
 else
     mkfs.ext4 -F "${PARTITION_BOOT}" >> /dev/null
 fi
 # Format swap
-mkswap "${PARTITION_SWAP}"  >> /dev/null
-swapon "${PARTITION_SWAP}"  >> /dev/null
+mkswap "${PARTITION_SWAP}" >> /dev/null
+swapon "${PARTITION_SWAP}" >> /dev/null
 # Format root (Btrfs)
-mkfs.btrfs -f "${PARTITION_ROOT}"  >> /dev/null
+mkfs.btrfs -f "${PARTITION_ROOT}" >> /dev/null
 
 if ! is_partition_successful; then
     echo "[ER] Abort"
-    exit $ERR_PARTITION
+    exit 1
 fi
 
 # 2.4) --- Mount ---------------------------------------------------------------
 mount -o noatime,compress-force=zstd:2,space_cache=v2 $PARTITION_ROOT /mnt >> /dev/null
 if last_command_failed; then
-    echo "[ER] '$DESTINATION_DISK' doesn't exist"
-    exit $ERR_MOUNT
+    echo "[ER] '$PARTITION_ROOT' failed to mount"
+    exit 1
 fi
 
 mount --mkdir $PARTITION_BOOT /mnt/boot >> /dev/null
 if last_command_failed; then
-    echo "[ER] '$DESTINATION_DISK' doesn't exist"
-    exit $ERR_MOUNT
+    echo "[ER] '$PARTITION_BOOT' failed to mount"
+    exit 1
 fi
 
 echo "[OK] Disk partitions have been created and mounted"
 echo
 
-# 3) === Mirrors ===============================================================
+# 3) === Update mirrors ===============================================================
 echo "[--] Updating mirrors..."
 reflector >> /dev/null
 echo "[OK] Mirrors have been updated"
 echo
 
-# 4) === Kernel ================================================================
+# 4) === Install kernel ================================================================
 echo "[--] Installing kernel..."
 pacstrap -K /mnt base linux linux-firmware >> /dev/null
 if last_command_failed; then
     echo "[ER] Failed to install Linux kernel -> abort"
-    exit $ERR_KERNEL
+    exit 1
 fi
 echo "[OK] Stable kernel has been installed"
 echo
 
 # 5) === System configuring ====================================================
+
+echo "[--] Generating fstab..."
+genfstab -U /mnt >> /mnt/etc/fstab
+if last_command_failed; then
+    echo "[ER] Failed to install Linux kernel -> abort"
+    exit 1
+fi
+echo "[OK] fstab has been generated"
+echo
+
+arch-chroot /mnt
 
 
