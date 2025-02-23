@@ -230,7 +230,7 @@ echo "[OK] Time has been set"
 # 5.3) --- localization --------------------------------------------------------
 echo "[--] Setting up localization..."
 for i in "${LOCALES[@]}"; do
-    sed -i "s/#${i}/${i}/g" /mnt/etc/local.gen
+    sed -i "s/#${i}/${i}/g" /mnt/etc/locale.gen
 done
 
 arch-chroot /mnt bash -c "locale-gen"
