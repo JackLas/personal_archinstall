@@ -97,11 +97,7 @@ function is_partition_successful() {
     return 0
 }
 
-
-
-# ==============================================================================
-
-# 0) todo: automate image verification before install - is it possible?
+# 0) === todo: automate image verification before install - is it possible? ====
 
 if is_uefi_boot_mode; then
     echo "[OK]" Detected UEFI boot mode
@@ -109,7 +105,7 @@ else
     echo "[OK]" Detected BIOS boot mode
 fi
 
-# 1) Check Internet connection
+# 1) === Check Internet connection =============================================
 echo "[--] Checking internet connection..."
 # ping -c 4 google.com > /dev/null 2>&1
 if last_command_failed; then
@@ -120,13 +116,11 @@ fi
 echo "[OK] Internet connection is established"
 echo
 
-
-
-# 2) Partition the disks
-# 2.1) Select a disk
+# 2) === Partition the disks ===================================================
+# 2.1) --- Select a disk -------------------------------------------------------
 echo "[--] Select a disk to install to:"
 lsblk -pdno NAME,SIZE,TYPE | grep 'disk'
-read -p "[--] Enter the disk to use (e.g., /dev/sda, /dev/nvme0n1): " DESTINATION_DISK 
+read -p "[--] Enter the disk to use (e.g., /dev/sda): " DESTINATION_DISK 
 
 if [ -z $DESTINATION_DISK ]; then
     echo "[ER] '$DESTINATION_DISK' doesn't exist"
@@ -139,10 +133,14 @@ if last_command_failed; then
     exit $ERR_DISK
 fi
 
+PARTITION_BOOT="${DESTINATION_DISK}1"
+PARTITION_SWAP="${DESTINATION_DISK}2"
+PARTITION_ROOT="${DESTINATION_DISK}3"
+
 echo "[OK] Arch Linux will be installed to $DESTINATION_DISK"
 echo
 
-# 2.2) Partition
+# 2.2) --- Partition -----------------------------------------------------------
 echo "[--] Preparing disk partitions..."
 # Wipe
 wipefs --all --force "$DESTINATION_DISK" >> /dev/null
@@ -153,9 +151,9 @@ if is_uefi_boot_mode; then
     parted -s "$DESTINATION_DISK" mklabel gpt >> /dev/null
     # /boot partition (1GB, FAT32 for UEFI)
     parted -s "$DESTINATION_DISK" mkpart primary fat32 1MiB 1GiB >> /dev/null
-    parted -s "$DESTINATION_DISK" set 1 esp on >> /dev/null # Mark as EFI system partition
+    parted -s "$DESTINATION_DISK" set 1 esp on >> /dev/null
 else
-    # Create MBR partition table (instead of GPT)
+    # Create MBR partition table
     parted -s "$DESTINATION_DISK" mklabel msdos >> /dev/null >> /dev/null
     # /boot partition (1GB, EXT4 for BIOS)
     parted -s "$DESTINATION_DISK" mkpart primary ext4 1MiB 1GiB >> /dev/null
@@ -166,20 +164,17 @@ parted -s "$DESTINATION_DISK" mkpart primary linux-swap 1GiB 9GiB >> /dev/null
 # Root (/) partition (Btrfs, using remaining space)
 parted -s "$DESTINATION_DISK" mkpart primary btrfs 9GiB 100% >> /dev/null
 
-# 2.3) Formating
-# Format /boot (UEFI: FAT32)
-PARTITION_BOOT="${DESTINATION_DISK}1"
+# 2.3) --- Formating -----------------------------------------------------------
+# Format boot
 if is_uefi_boot_mode; then
     mkfs.fat -F32 "${PARTITION_BOOT}"  >> /dev/null
 else
     mkfs.ext4 -F "${PARTITION_BOOT}" >> /dev/null
 fi
 # Format swap
-PARTITION_SWAP="${DESTINATION_DISK}2"
 mkswap "${PARTITION_SWAP}"  >> /dev/null
 swapon "${PARTITION_SWAP}"  >> /dev/null
 # Format root (Btrfs)
-PARTITION_ROOT="${DESTINATION_DISK}3"
 mkfs.btrfs -f "${PARTITION_ROOT}"  >> /dev/null
 
 if ! is_partition_successful; then
@@ -187,8 +182,8 @@ if ! is_partition_successful; then
     exit $ERR_PARTITION
 fi
 
-# 2.4) Mount
-mount -o compress=zstd:3,noatime,space_cache=v2 $PARTITION_ROOT /mnt >> /dev/null
+# 2.4) --- Mount ---------------------------------------------------------------
+mount -o noatime,compress-force=zstd:2,space_cache=v2 $PARTITION_ROOT /mnt >> /dev/null
 if last_command_failed; then
     echo "[ER] '$DESTINATION_DISK' doesn't exist"
     exit $ERR_MOUNT
@@ -203,13 +198,13 @@ fi
 echo "[OK] Disk partitions have been created and mounted"
 echo
 
-# 3) Mirrors
+# 3) === Mirrors ===============================================================
 echo "[--] Updating mirrors..."
 reflector >> /dev/null
 echo "[OK] Mirrors have been updated"
 echo
 
-# 4) Kernel
+# 4) === Kernel ================================================================
 echo "[--] Installing kernel..."
 pacstrap -K /mnt base linux linux-firmware >> /dev/null
 if last_command_failed; then
@@ -217,3 +212,8 @@ if last_command_failed; then
     exit $ERR_KERNEL
 fi
 echo "[OK] Stable kernel has been installed"
+echo
+
+# 5) === System configuring ====================================================
+
+
