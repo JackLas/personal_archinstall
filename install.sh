@@ -187,7 +187,7 @@ if ! is_partition_successful; then
 fi
 
 # 2.4) Mount
-mount $PARTITION_ROOT /mnt >> /dev/null
+mount -o compress=zstd:3,noatime,space_cache=v2 $PARTITION_ROOT /mnt >> /dev/null
 if last_command_failed; then
     echo "[ER] '$DESTINATION_DISK' doesn't exist"
     exit $ERR_MOUNT
@@ -201,3 +201,8 @@ fi
 
 echo "[OK] Disk partitions are created and mounted"
 echo
+
+# 3) Mirrors
+echo "[--] Updating mirrors..."
+reflector >> /dev/null
+echo "[OK] Mirrors are up to date"
