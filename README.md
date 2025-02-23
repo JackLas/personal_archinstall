@@ -11,3 +11,4 @@ What does it do:
 - Creates swap partition fir 8GiB (1Gib -> 9GiB)
 - Creates / parition for rest of space (9GiB -> rest-of-space): BTRFS (compress=zstd:3,noatime,space_cache=v2)
 - Updates mirrors
+- Installs stable Linux kernel 

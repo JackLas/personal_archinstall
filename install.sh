@@ -26,6 +26,7 @@ ERR_INTERNET=1
 ERR_DISK=2
 ERR_PARTITION=3
 ERR_MOUNT=4
+ERR_KERNEL=4
 
 # ====== Variables =============================================================
 
@@ -199,10 +200,20 @@ if last_command_failed; then
     exit $ERR_MOUNT
 fi
 
-echo "[OK] Disk partitions are created and mounted"
+echo "[OK] Disk partitions have been created and mounted"
 echo
 
 # 3) Mirrors
 echo "[--] Updating mirrors..."
 reflector >> /dev/null
-echo "[OK] Mirrors are up to date"
+echo "[OK] Mirrors have been updated"
+echo
+
+# 4) Kernel
+echo "[--] Installing kernel..."
+pacstrap -K /mnt base linux linux-firmware >> /dev/null
+if last_command_failed; then
+    echo "[ER] Failed to install Linux kernel -> abort"
+    exit $ERR_KERNEL
+fi
+echo "[OK] Stable kernel has been installed"
