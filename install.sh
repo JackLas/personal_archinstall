@@ -51,7 +51,7 @@ function is_uefi_boot_mode() {
     fi
 }
 
-check_partition() {
+function check_partition() {
     PART="$1"
     TYPE="$2"
 
@@ -71,36 +71,12 @@ check_partition() {
     return 0
 }
 
-function is_partition_successful() {
-    EXPECTED_BOOT_FS="ext4"
-    if is_uefi_boot_mode; then
-        EXPECTED_BOOT_FS="vfat"
-    fi
-
-    if ! check_partition "${PARTITION_BOOT}" "$EXPECTED_BOOT_FS"; then
-        echo "[ER] Failed to create boot partition"
-        return 1
-    fi
-    
-    if ! check_partition "${PARTITION_SWAP}" "swap"; then
-        echo "[ER] Failed to create swap partition"
-        return 1
-    fi
-
-    if ! check_partition "${PARTITION_ROOT}" "btrfs"; then
-        echo "[ER] Failed to create root partition"
-        return 1
-    fi
-
-    return 0
-}
-
 # 0) === todo: automate image verification before install - is it possible? ====
 
 if is_uefi_boot_mode; then
-    echo "[OK]" Detected UEFI boot mode
+    echo "[OK] Detected UEFI boot mode"
 else
-    echo "[OK]" Detected BIOS boot mode
+    echo "[OK] Detected unsupported BIOS boot mode -> abort"; exit 1
 fi
 
 # 1) === Check Internet connection =============================================
@@ -137,50 +113,40 @@ echo
 
 # 2.2) --- Partition -----------------------------------------------------------
 echo "[--] Preparing disk partitions..."
+
 # Wipe
 wipefs --all --force "$DESTINATION_DISK" >> /dev/null
 sgdisk --zap-all "$DESTINATION_DISK" >> /dev/null
 
-if is_uefi_boot_mode; then
-    # Create a new GPT partition table
-    parted -s "$DESTINATION_DISK" mklabel gpt >> /dev/null
-    # /boot partition (1GB, FAT32 for UEFI)
-    parted -s "$DESTINATION_DISK" mkpart primary fat32 1MiB 1GiB >> /dev/null
-    parted -s "$DESTINATION_DISK" set 1 esp on >> /dev/null
+# Create a new GPT partition table
+parted -s "$DESTINATION_DISK" mklabel gpt >> /dev/null
 
-        # Swap partition (8GB)
-    parted -s "$DESTINATION_DISK" mkpart primary linux-swap 1GiB 9GiB >> /dev/null
-    # Root (/) partition (Btrfs, using remaining space)
-    parted -s "$DESTINATION_DISK" mkpart primary btrfs 9GiB 100% >> /dev/null
-else
-    # Create MBR partition table
-    parted -s "$DESTINATION_DISK" mklabel msdos >> /dev/null >> /dev/null
-    # /boot partition 1MiB for grub and +1 MiB for potential bootloader files
-    parted -s "$DESTINATION_DISK" mkpart primary 1MiB 3MiB >> /dev/null
-    parted -s "$DESTINATION_DISK" set 1 boot on
-    parted -s "$DESTINATION_DISK" name 1 BIOSboot
+# /boot partition (1GB, FAT32 for UEFI)
+parted -s "$DESTINATION_DISK" mkpart primary fat32 1MiB 1GiB >> /dev/null
+parted -s "$DESTINATION_DISK" set 1 esp on >> /dev/null
 
-    # Swap partition (8GB)
-    parted -s "$DESTINATION_DISK" mkpart primary linux-swap 3MiB 8195MiB >> /dev/null
-    # Root (/) partition (Btrfs, using remaining space)
-    parted -s "$DESTINATION_DISK" mkpart primary btrfs 8195MiB 100% >> /dev/null
-fi
+# Swap partition (8GB)
+parted -s "$DESTINATION_DISK" mkpart primary linux-swap 1GiB 9GiB >> /dev/null
+
+# Root (/) partition (Btrfs, using remaining space)
+parted -s "$DESTINATION_DISK" mkpart primary btrfs 9GiB 100% >> /dev/null
 
 # 2.3) --- Format --------------------------------------------------------------
 # Format boot
-if is_uefi_boot_mode; then
-    mkfs.fat -F32 "${PARTITION_BOOT}" >> /dev/null
-else
-    mkfs.ext4 -F "${PARTITION_BOOT}" >> /dev/null
+mkfs.fat -F32 "${PARTITION_BOOT}" >> /dev/null
+if ! check_partition "${PARTITION_BOOT}" "vfat"; then
+    echo "[ER] Failed to create boot partition"; exit 1
 fi
 # Format swap
 mkswap "${PARTITION_SWAP}" >> /dev/null
 swapon "${PARTITION_SWAP}" >> /dev/null
+if ! check_partition "${PARTITION_SWAP}" "swap"; then
+    echo "[ER] Failed to create swap partition"; exit 1
+fi
 # Format root (Btrfs)
 mkfs.btrfs -f "${PARTITION_ROOT}" >> /dev/null
-
-if ! is_partition_successful; then
-    echo "[ER] Abort"; exit 1
+if ! check_partition "${PARTITION_ROOT}" "btrfs"; then
+    echo "[ER] Failed to create root partition"; exit 1
 fi
 
 # 2.4) --- Mount ---------------------------------------------------------------
@@ -280,18 +246,7 @@ if last_command_failed; then
     echo "[ER] Failed to install grub and timeshift"; exit 1
 fi
 
-GRUB_INSTALL_PARAMS=""
-if is_uefi_boot_mode; then
-    GRUB_INSTALL_PARAMS="--target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB"
-    # todo: handle 32-bit IA32 UEFI here - do I need it???
-else
-    : # todo bios
-fi
-if [ -z "${GRUB_INSTALL_PARAMS}" ]; then
-    echo "[ER] Undefined grub install parameters"; exit 1
-fi
-
-arch-chroot /mnt bash -c "grub-install ${GRUB_INSTALL_PARAMS}"
+arch-chroot /mnt bash -c "grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB"
 if last_command_failed; then
     echo "[ER] Failed to install grub"; exit 1
 fi
@@ -315,4 +270,4 @@ echo "[OK] Grub with timeshift support has been installed"
 umount /mnt/boot
 umount /mnt
 
-printf "\n\nReboot!!!"
+printf "\n\nReboot!!!\n\n"
