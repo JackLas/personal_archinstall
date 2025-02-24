@@ -22,8 +22,7 @@
 # ====== Constants =============================================================
 TIME_ZONE_REGION="Europe/Kyiv"
 LOCALES="en_US.UTF-8 uk_UA.UTF-8 ru_RU.UTF-8"
-LOCALE_LANG="uk_UA.UTF-8"
-LOCALE_LC_MESSAGES="en_US.UTF-8"
+LOCALE_LANG="en_US.UTF-8"
 
 # ====== Variables =============================================================
 PARTITION_BOOT=""
@@ -36,6 +35,12 @@ function last_command_failed() {
         return 1
     else
         return 0
+    fi
+}
+
+function assert_success() {
+    if last_command_failed; then
+        echo "$1"; exit 1
     fi
 }
 
@@ -79,9 +84,7 @@ fi
 # 1) === Check Internet connection =============================================
 echo "[--] Checking internet connection..."
 # ping -c 4 google.com > /dev/null 2>&1
-if last_command_failed; then
-    echo "[ER] No internet connection -> abort"; exit 1
-fi
+assert_success "[ER] No internet connection -> abort"
 
 echo "[OK] Internet connection is established"
 echo
@@ -97,9 +100,7 @@ if [ -z $DESTINATION_DISK ]; then
 fi
 
 ls $DESTINATION_DISK > /dev/null 2>&1
-if last_command_failed; then
-    echo "[ER] '$DESTINATION_DISK' doesn't exist"; exit 1
-fi
+assert_success "[ER] '$DESTINATION_DISK' doesn't exist"
 
 PARTITION_BOOT="${DESTINATION_DISK}1"
 PARTITION_SWAP="${DESTINATION_DISK}2"
@@ -164,9 +165,7 @@ mount -o $BTRFS_MOUNT_OPTIONS,subvol=@log $PARTITION_ROOT /mnt/var/log
 mount -o $BTRFS_MOUNT_OPTIONS,subvol=@cache $PARTITION_ROOT /mnt/var/cache
 mount -o $BTRFS_MOUNT_OPTIONS,subvol=@snapshots $PARTITION_ROOT /mnt/.snapshots
 mount $PARTITION_BOOT /mnt/boot
-if last_command_failed; then
-    echo "[ER] '$PARTITION_BOOT' failed to mount"; exit 1
-fi
+assert_success "[ER] '$PARTITION_BOOT' failed to mount"
 
 echo "[OK] Disk partitions have been created and mounted"
 echo
@@ -180,9 +179,7 @@ echo
 # 4) === Install kernel ========================================================
 echo "[--] Installing kernel..."
 pacstrap -K /mnt base linux linux-firmware >> /dev/null
-if last_command_failed; then
-    echo "[ER] Failed to install Linux kernel -> abort"; exit 1
-fi
+assert_success "[ER] Failed to install Linux kernel -> abort"
 echo "[OK] Stable kernel has been installed"
 echo
 
@@ -190,22 +187,18 @@ echo
 # 5.1) --- fstab ---------------------------------------------------------------
 echo "[--] Generating fstab..."
 genfstab -U /mnt >> /mnt/etc/fstab
-if last_command_failed; then
-    echo "[ER] Failed to generate fstab"; exit 1
-fi
+assert_success "[ER] Failed to generate fstab"
 echo "[OK] fstab has been generated"
 echo
 
 # 5.2) --- time ----------------------------------------------------------------
 echo "[--] Setting up time..."
 ln -sf /mnt/usr/share/zoneinfo/${TIME_ZONE_REGION} /mnt/etc/localtime
-if last_command_failed; then
-    echo "[ER] Failed to set time zone"; exit 1
-fi
+assert_success "[ER] Failed to set time zone"
+
 arch-chroot /mnt bash -c "hwclock --systohc" >> /dev/null
-if last_command_failed; then
-    echo "[ER] Failed to set time zone"; exit 1
-fi
+assert_success "[ER] Failed to sync clock"
+
 echo "[OK] Time has been set"
 
 # 5.3) --- localization --------------------------------------------------------
@@ -215,6 +208,7 @@ for i in $LOCALES; do
 done
 
 arch-chroot /mnt bash -c "locale-gen" >> /dev/null
+assert_success "[ER] Failed to sync clock"
 
 for i in $LOCALES; do
     to_check=${i}
@@ -225,34 +219,15 @@ for i in $LOCALES; do
 done
 
 echo "LANG=${LOCALE_LANG}" >> "/mnt/etc/locale.conf"
-echo "LC_MESSAGES=${LOCALE_LC_MESSAGES}" >> "/mnt/etc/locale.conf"
 
 # todo: add keyboard layouts after installing KDE
 
 echo "[OK] Localization has been set"
 
-# 5.4) --- hostname ------------------------------------------------------------
-read -p "[--] Set hostname: " HOSTNAME
-echo "${HOSTNAME}" >> /mnt/etc/hostname
-if last_command_failed; then
-    echo "[ER] Failed to set hostname"; exit 1
-fi
-echo "[OK] Hostname has been set"
-
-# 5.4) --- passwd --------------------------------------------------------------
-echo "[--] Set root password"
-arch-chroot /mnt bash -c "passwd"
-if last_command_failed; then
-    echo "[ER] Failed to set root password"; exit 1
-fi
-echo "[OK] root password has been set"
-
-# 5.5) --- grub boot loader with timeshift support -----------------------------
+# 5.4) --- grub boot loader with timeshift support -----------------------------
 echo "[--] Installing grub with timeshift support..."
-arch-chroot /mnt bash -c "pacman -S --noconfirm efibootmgr grub grub-btrfs btrfs-progs timeshift"
-if last_command_failed; then
-    echo "[ER] Failed to install grub and timeshift"; exit 1
-fi
+arch-chroot /mnt bash -c "pacman -S --noconfirm efibootmgr btrfs-progs grub grub-btrfs inotify-tools timeshift"
+assert_success "[ER] Failed to install grub and timeshift"
 
 GRUB_CONFIG="/mnt/etc/default/grub"
 if ! grep -q "GRUB_DISABLE_OS_PROBER" "$GRUB_CONFIG"; then
@@ -268,31 +243,56 @@ else
 fi
 
 arch-chroot /mnt bash -c "grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB"
-if last_command_failed; then
-    echo "[ER] Failed to install grub"; exit 1
-fi
+assert_success "[ER] Failed to install grub"
 
 arch-chroot /mnt bash -c "timeshift --create --comments "Initial snapshot" --tags D"
-if last_command_failed; then
-    echo "[ER] Failed to create initial timeshift snapshot"; exit 1
-fi
-#echo "GRUB_ENABLE_BTRFS=\"true\"" >> /mnt/etc/default/grub
-#sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT=.*$/GRUB_CMDLINE_LINUX_DEFAULT=\"quiet btrfs.root=$(blkid -o value -s PARTUUID ${PARTITION_ROOT})\"/" /mnt/etc/default/grub
+assert_success "[ER] Failed to create initial timeshift snapshot"
 
 arch-chroot /mnt bash -c "grub-mkconfig -o /boot/grub/grub.cfg"
-if last_command_failed; then
-    echo "[ER] Failed to make grub config"; exit 1
-fi
+assert_success "[ER] Failed to make grub config"
 
 arch-chroot /mnt bash -c "systemctl enable grub-btrfsd.service"
-if last_command_failed; then
-    echo "[ER] Failed toenable grub-btrfsd.service"; exit 1
-fi
+assert_success "[ER] Failed toenable grub-btrfsd.service"
 
 echo "[OK] Grub with timeshift support has been installed"
 
+# 5.5) --- hostname ------------------------------------------------------------
+read -p "[--] Set hostname: " HOSTNAME
+echo "${HOSTNAME}" >> /mnt/etc/hostname
+assert_success "[ER] Failed to set hostname"
+echo "[OK] Hostname has been set"
+
+# 5.6) --- passwd --------------------------------------------------------------
+echo "[--] Set root password"
+arch-chroot /mnt bash -c "passwd"
+assert_success "[ER] Failed to set root password"
+echo "[OK] root password has been set"
+
+# 5.7) --- create user ---------------------------------------------------------
+read -p "[--] Enter your username: " USERNAME
+arch-chroot /mnt bash -c "useradd -m -G wheel -s /bin/bash ${USERNAME}"
+assert_success "[ER] Failed to create a user"
+
+arch-chroot /mnt bash -c "passwd ${USERNAME}"
+assert_success "[ER] Failed to set ${USERNAME} password"
+
+arch-chroot /mnt bash -c "pacman -S --noconfirm sudo"
+sed -i -E "s/^ *# *%wheel ALL=\(ALL:ALL\) ALL/%wheel ALL=\(ALL:ALL\) ALL/g" /mnt/etc/sudoers
+if ! grep -q "^%wheel ALL=\(ALL:ALL\) ALL$" "/mnt/etc/sudoers"; then
+    echo "[ER] Failed to add sudo permissions to ${USERNAME}"; exit 1
+fi
+
+echo "[OK] User has been created"
+
+arch-chroot /mnt bash -c "pacman -S --noconfirm networkmanager"
+arch-chroot /mnt bash -c "systemctl enable NetworkManager.service"
+
 # exit cleanup
 umount /mnt/boot
+umount /mnt/.snapshots
+umount /mnt/var/cache
+umount /mnt/var/log
+umount /mnt/home
 umount /mnt
 
 printf "\n\nReboot!!!\n\n"
