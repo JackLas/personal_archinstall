@@ -21,10 +21,7 @@
 
 # ====== Constants =============================================================
 TIME_ZONE_REGION="Europe/Kyiv"
-LOCALES=(
-"en_US.UTF-8"
-"uk_UA.UTF-8"
-"ru_RU.UTF-8")
+LOCALES="en_US.UTF-8 uk_UA.UTF-8 ru_RU.UTF-8"
 LOCALE_LANG="uk_UA.UTF-8"
 LOCALE_LC_MESSAGES="en_US.UTF-8"
 
@@ -149,13 +146,24 @@ if ! check_partition "${PARTITION_ROOT}" "btrfs"; then
     echo "[ER] Failed to create root partition"; exit 1
 fi
 
-# 2.4) --- Mount ---------------------------------------------------------------
-mount -o noatime,compress-force=zstd:2,space_cache=v2 $PARTITION_ROOT /mnt >> /dev/null
-if last_command_failed; then
-    echo "[ER] '$PARTITION_ROOT' failed to mount"; exit 1
-fi
+# Create root BTRFS subvolumes
+mount $PARTITION_ROOT /mnt
+btrfs subvolume create /mnt/@
+btrfs subvolume create /mnt/@home
+btrfs subvolume create /mnt/@log
+btrfs subvolume create /mnt/@cache
+btrfs subvolume create /mnt/@snapshots
+umount /mnt
 
-mount --mkdir $PARTITION_BOOT /mnt/boot >> /dev/null
+# 2.4) --- Mount ---------------------------------------------------------------
+BTRFS_MOUNT_OPTIONS="noatime,compress-force=zstd:2,space_cache=v2"
+mount -o $BTRFS_MOUNT_OPTIONS,subvol=@ $PARTITION_ROOT /mnt
+mkdir -p /mnt/{boot,home,var/log,var/cache,.snapshots} 
+mount -o $BTRFS_MOUNT_OPTIONS,subvol=@home $PARTITION_ROOT /mnt/home
+mount -o $BTRFS_MOUNT_OPTIONS,subvol=@log $PARTITION_ROOT /mnt/var/log
+mount -o $BTRFS_MOUNT_OPTIONS,subvol=@cache $PARTITION_ROOT /mnt/var/cache
+mount -o $BTRFS_MOUNT_OPTIONS,subvol=@snapshots $PARTITION_ROOT /mnt/.snapshots
+mount $PARTITION_BOOT /mnt/boot
 if last_command_failed; then
     echo "[ER] '$PARTITION_BOOT' failed to mount"; exit 1
 fi
@@ -202,13 +210,13 @@ echo "[OK] Time has been set"
 
 # 5.3) --- localization --------------------------------------------------------
 echo "[--] Setting up localization..."
-for i in "${LOCALES[@]}"; do
+for i in $LOCALES; do
     sed -i "s/#${i}/${i}/g" /mnt/etc/locale.gen
 done
 
 arch-chroot /mnt bash -c "locale-gen" >> /dev/null
 
-for i in "${LOCALES[@]}"; do
+for i in $LOCALES; do
     to_check=${i}
     to_check=${to_check/UTF-8/utf8}
     if ! arch-chroot /mnt bash -c "locale -a" | grep -q "^${to_check}$"; then
@@ -241,9 +249,22 @@ echo "[OK] root password has been set"
 
 # 5.5) --- grub boot loader with timeshift support -----------------------------
 echo "[--] Installing grub with timeshift support..."
-arch-chroot /mnt bash -c "pacman -S --noconfirm grub efibootmgr grub-btrfs timeshift"
+arch-chroot /mnt bash -c "pacman -S --noconfirm efibootmgr grub grub-btrfs btrfs-progs timeshift"
 if last_command_failed; then
     echo "[ER] Failed to install grub and timeshift"; exit 1
+fi
+
+GRUB_CONFIG="/mnt/etc/default/grub"
+if ! grep -q "GRUB_DISABLE_OS_PROBER" "$GRUB_CONFIG"; then
+    echo "GRUB_DISABLE_OS_PROBER=false" >> "$GRUB_CONFIG"
+else
+    sed -i 's/^GRUB_DISABLE_OS_PROBER=.*/GRUB_DISABLE_OS_PROBER=false/' "$GRUB_CONFIG"
+fi
+
+if ! grep -q "GRUB_BTRFS_SUBVOLUME" "$GRUB_CONFIG"; then
+    echo 'GRUB_BTRFS_SUBVOLUME="/@"' >> "$GRUB_CONFIG"
+else
+    sed -i 's|^GRUB_BTRFS_SUBVOLUME=.*|GRUB_BTRFS_SUBVOLUME="/@"|' "$GRUB_CONFIG"
 fi
 
 arch-chroot /mnt bash -c "grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB"
@@ -251,17 +272,21 @@ if last_command_failed; then
     echo "[ER] Failed to install grub"; exit 1
 fi
 
-
 arch-chroot /mnt bash -c "timeshift --create --comments "Initial snapshot" --tags D"
 if last_command_failed; then
     echo "[ER] Failed to create initial timeshift snapshot"; exit 1
 fi
-echo "GRUB_ENABLE_BTRFS=\"true\"" >> /mnt/etc/default/grub
-sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT=.*$/GRUB_CMDLINE_LINUX_DEFAULT=\"quiet btrfs.root=$(blkid -o value -s PARTUUID ${PARTITION_ROOT})\"/" /mnt/etc/default/grub
+#echo "GRUB_ENABLE_BTRFS=\"true\"" >> /mnt/etc/default/grub
+#sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT=.*$/GRUB_CMDLINE_LINUX_DEFAULT=\"quiet btrfs.root=$(blkid -o value -s PARTUUID ${PARTITION_ROOT})\"/" /mnt/etc/default/grub
 
 arch-chroot /mnt bash -c "grub-mkconfig -o /boot/grub/grub.cfg"
 if last_command_failed; then
     echo "[ER] Failed to make grub config"; exit 1
+fi
+
+arch-chroot /mnt bash -c "systemctl enable grub-btrfsd.service"
+if last_command_failed; then
+    echo "[ER] Failed toenable grub-btrfsd.service"; exit 1
 fi
 
 echo "[OK] Grub with timeshift support has been installed"
