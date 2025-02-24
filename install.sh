@@ -24,10 +24,25 @@ TIME_ZONE_REGION="Europe/Kyiv"
 LOCALES="en_US.UTF-8 uk_UA.UTF-8 ru_RU.UTF-8"
 LOCALE_LANG="en_US.UTF-8"
 
-# ====== Variables =============================================================
-PARTITION_BOOT=""
-PARTITION_SWAP=""
-PARTITION_ROOT=""
+BASE_PACKAGES=( # will be installed with pacstrap before system configuration
+"base" # essential package group for Arch Linux
+"linux" # the latest stable kernel
+"linux-firmware" # drivers
+"efibootmgr" # EFI Boot Manager
+"btrfs-progs" #  BTRFS utils
+"grub" # boot boot-loader
+"timeshift" # create system snapshots
+"grub-btrfs" # add snapshots to the grub loader
+"inotify-tools" # dependency for grub-btrfsd.service
+"networkmanager" # network manager
+"sudo" # root permissions
+)
+
+DESKTOP_ENV_PACKAGES=( # will be installed after system configuration
+)
+
+APPLICATION_PACKAGES=( # will be installed as a last step
+)
 
 # ====== Helpers ===============================================================
 function last_command_failed() {
@@ -73,8 +88,8 @@ function check_partition() {
     return 0
 }
 
-# 0) === todo: automate image verification before install - is it possible? ====
 
+# 0) === Check if boot mode is correct =========================================
 if is_uefi_boot_mode; then
     echo "[OK] Detected UEFI boot mode"
 else
@@ -147,7 +162,7 @@ if ! check_partition "${PARTITION_ROOT}" "btrfs"; then
     echo "[ER] Failed to create root partition"; exit 1
 fi
 
-# Create root BTRFS subvolumes
+# 2.4) --- Create root BTRFS subvolumes ----------------------------------------
 mount $PARTITION_ROOT /mnt
 btrfs subvolume create /mnt/@
 btrfs subvolume create /mnt/@home
@@ -156,7 +171,7 @@ btrfs subvolume create /mnt/@cache
 btrfs subvolume create /mnt/@snapshots
 umount /mnt
 
-# 2.4) --- Mount ---------------------------------------------------------------
+# 2.5) --- Mount ---------------------------------------------------------------
 BTRFS_MOUNT_OPTIONS="noatime,compress-force=zstd:2,space_cache=v2"
 mount -o $BTRFS_MOUNT_OPTIONS,subvol=@ $PARTITION_ROOT /mnt
 mkdir -p /mnt/{boot,home,var/log,var/cache,.snapshots} 
@@ -177,10 +192,10 @@ echo "[OK] Mirrors have been updated"
 echo
 
 # 4) === Install kernel ========================================================
-echo "[--] Installing kernel..."
-pacstrap -K /mnt base linux linux-firmware >> /dev/null
-assert_success "[ER] Failed to install Linux kernel -> abort"
-echo "[OK] Stable kernel has been installed"
+echo "[--] Installing base packages kernel..."
+pacstrap -K /mnt ${BASE_PACKAGES[@]}
+assert_success "[ER] Failed to install base packages -> abort"
+echo "[OK] Base packages have been installed"
 echo
 
 # 5) === System configuring ====================================================
@@ -225,10 +240,7 @@ echo "LANG=${LOCALE_LANG}" >> "/mnt/etc/locale.conf"
 echo "[OK] Localization has been set"
 
 # 5.4) --- grub boot loader with timeshift support -----------------------------
-echo "[--] Installing grub with timeshift support..."
-arch-chroot /mnt bash -c "pacman -S --noconfirm efibootmgr btrfs-progs grub grub-btrfs inotify-tools timeshift"
-assert_success "[ER] Failed to install grub and timeshift"
-
+echo "[--] Configuring grub with timeshift support..."
 GRUB_CONFIG="/mnt/etc/default/grub"
 if ! grep -q "GRUB_DISABLE_OS_PROBER" "$GRUB_CONFIG"; then
     echo "GRUB_DISABLE_OS_PROBER=false" >> "$GRUB_CONFIG"
@@ -252,9 +264,9 @@ arch-chroot /mnt bash -c "grub-mkconfig -o /boot/grub/grub.cfg"
 assert_success "[ER] Failed to make grub config"
 
 arch-chroot /mnt bash -c "systemctl enable grub-btrfsd.service"
-assert_success "[ER] Failed toenable grub-btrfsd.service"
+assert_success "[ER] Failed to enable grub-btrfsd.service"
 
-echo "[OK] Grub with timeshift support has been installed"
+echo "[OK] Grub with timeshift support has been configured"
 
 # 5.5) --- hostname ------------------------------------------------------------
 read -p "[--] Set hostname: " HOSTNAME
@@ -262,13 +274,13 @@ echo "${HOSTNAME}" >> /mnt/etc/hostname
 assert_success "[ER] Failed to set hostname"
 echo "[OK] Hostname has been set"
 
-# 5.6) --- passwd --------------------------------------------------------------
+# 5.6) --- root passwd ---------------------------------------------------------
 echo "[--] Set root password"
 arch-chroot /mnt bash -c "passwd"
 assert_success "[ER] Failed to set root password"
 echo "[OK] root password has been set"
 
-# 5.7) --- create user ---------------------------------------------------------
+# 5.7) --- create user with sudo permissions -----------------------------------
 read -p "[--] Enter your username: " USERNAME
 arch-chroot /mnt bash -c "useradd -m -G wheel -s /bin/bash ${USERNAME}"
 assert_success "[ER] Failed to create a user"
@@ -276,15 +288,16 @@ assert_success "[ER] Failed to create a user"
 arch-chroot /mnt bash -c "passwd ${USERNAME}"
 assert_success "[ER] Failed to set ${USERNAME} password"
 
-arch-chroot /mnt bash -c "pacman -S --noconfirm sudo"
+# allow sudo for created user
 sed -i -E "s/^ *# *%wheel ALL=\(ALL:ALL\) ALL/%wheel ALL=\(ALL:ALL\) ALL/g" /mnt/etc/sudoers
-if ! grep -q "^%wheel ALL=\(ALL:ALL\) ALL$" "/mnt/etc/sudoers"; then
+if ! grep -q "^%wheel ALL=(ALL:ALL) ALL$" "/mnt/etc/sudoers"; then
     echo "[ER] Failed to add sudo permissions to ${USERNAME}"; exit 1
 fi
 
 echo "[OK] User has been created"
 
-arch-chroot /mnt bash -c "pacman -S --noconfirm networkmanager"
+# todo: move
+# enable internet
 arch-chroot /mnt bash -c "systemctl enable NetworkManager.service"
 
 # exit cleanup
