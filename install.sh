@@ -44,23 +44,53 @@ DESKTOP_ENV_PACKAGES=( # will be installed after system configuration
 APPLICATION_PACKAGES=( # will be installed as a last step
 )
 
+# ====== Logging ===============================================================
+# logfile collects every output
+# terminal shows only text printed with logXYZ functions
+# commands run via interactively will print in both terminal and logfile
+
+LOGFILE="install.log.txt"
+rm -f $LOGFILE
+exec 3>&1
+exec > $LOGFILE 2>&1
+
+function log_impl {
+    printf "$@\n" | tee /dev/tty
+}
+
+function log_newline {
+    log_impl
+}
+
+function log {
+    log_impl "[--] $@"
+}
+
+function log_ok {
+    log_impl "[OK] $@"
+}
+
+function log_error {
+    log_impl "[ER] $@"
+}
+
+function interactively {
+    "$@" >/dev/tty 2>&1
+}
+
 # ====== Helpers ===============================================================
-function last_command_failed() {
-    if [ $? -eq 0 ]; then
-        return 1
-    else
-        return 0
-    fi
+function for_system() {
+    arch-chroot /mnt bash -c "$@"
 }
 
 function assert_success() {
-    if last_command_failed; then
-        echo "$1"; exit 1
+    if [ $? -ne 0 ]; then
+        log_error "$@"; 
+        exit 1
     fi
 }
 
 function is_uefi_boot_mode() {
-    # Check for UEFI by looking for /sys/firmware/efi
     if [ -d /sys/firmware/efi ]; then
         return 0  # UEFI mode
     else
@@ -74,14 +104,14 @@ function check_partition() {
 
     # Check if the partition exists
     if [ ! -b "$PART" ]; then
-        echo "[ER] $PART is missing!"
+        log_error "$PART is missing!"
         return 1
     fi
 
     # Check if the partition is formatted with the correct filesystem
     FS_TYPE=$(blkid -o value -s TYPE "$PART")
     if [ "$FS_TYPE" != "$TYPE" ]; then
-        echo "[ER] $PART is NOT formatted as $TYPE (found: $FS_TYPE)"
+        log_error "$PART is NOT formatted as $TYPE (found: $FS_TYPE)"
         return 1
     fi
 
@@ -91,214 +121,251 @@ function check_partition() {
 
 # 0) === Check if boot mode is correct =========================================
 if is_uefi_boot_mode; then
-    echo "[OK] Detected UEFI boot mode"
+    log_ok "Detected UEFI boot mode"
 else
-    echo "[OK] Detected unsupported BIOS boot mode -> abort"; exit 1
+    log_error "Detected unsupported BIOS boot mode"; exit 1
 fi
 
 # 1) === Check Internet connection =============================================
-echo "[--] Checking internet connection..."
+log "Checking internet connection..."
 # ping -c 4 google.com > /dev/null 2>&1
-assert_success "[ER] No internet connection -> abort"
-
-echo "[OK] Internet connection is established"
-echo
+assert_success "No internet connection"
+log_ok "Internet connection is established"
+log_newline
 
 # 2) === Partition the disks ===================================================
 # 2.1) --- Select a disk -------------------------------------------------------
-echo "[--] Select a disk to install to:"
-lsblk -pdno NAME,SIZE,TYPE | grep 'disk'
-read -p "[--] Enter the disk to use (e.g., /dev/sda): " DESTINATION_DISK 
+log "Select a disk to install to:"
+interactively lsblk -pdno NAME,SIZE,TYPE
+interactively read -p "Enter the disk to use (e.g., /dev/sda): " DESTINATION_DISK 
 
 if [ -z $DESTINATION_DISK ]; then
-    echo "[ER] '$DESTINATION_DISK' doesn't exist"; exit 1
+    log_error "'$DESTINATION_DISK' doesn't exist"; exit 1
 fi
 
 ls $DESTINATION_DISK > /dev/null 2>&1
-assert_success "[ER] '$DESTINATION_DISK' doesn't exist"
+assert_success "'$DESTINATION_DISK' doesn't exist"
 
 PARTITION_BOOT="${DESTINATION_DISK}1"
 PARTITION_SWAP="${DESTINATION_DISK}2"
 PARTITION_ROOT="${DESTINATION_DISK}3"
 
-echo "[OK] Arch Linux will be installed to $DESTINATION_DISK"
-echo
+log_ok "Arch Linux will be installed to $DESTINATION_DISK"
+log_newline
 
 # 2.2) --- Partition -----------------------------------------------------------
-echo "[--] Preparing disk partitions..."
+log "Preparing disk partitions..."
 
 # Wipe
-wipefs --all --force "$DESTINATION_DISK" >> /dev/null
-sgdisk --zap-all "$DESTINATION_DISK" >> /dev/null
+wipefs --all --force "$DESTINATION_DISK"
+sgdisk --zap-all "$DESTINATION_DISK"
 
 # Create a new GPT partition table
-parted -s "$DESTINATION_DISK" mklabel gpt >> /dev/null
+parted -s "$DESTINATION_DISK" mklabel gpt
 
 # /boot partition (1GB, FAT32 for UEFI)
-parted -s "$DESTINATION_DISK" mkpart primary fat32 1MiB 1GiB >> /dev/null
-parted -s "$DESTINATION_DISK" set 1 esp on >> /dev/null
+parted -s "$DESTINATION_DISK" mkpart primary fat32 1MiB 1GiB
+parted -s "$DESTINATION_DISK" set 1 esp on
 
 # Swap partition (8GB)
-parted -s "$DESTINATION_DISK" mkpart primary linux-swap 1GiB 9GiB >> /dev/null
+parted -s "$DESTINATION_DISK" mkpart primary linux-swap 1GiB 9GiB
 
 # Root (/) partition (Btrfs, using remaining space)
-parted -s "$DESTINATION_DISK" mkpart primary btrfs 9GiB 100% >> /dev/null
+parted -s "$DESTINATION_DISK" mkpart primary btrfs 9GiB 100%
 
 # 2.3) --- Format --------------------------------------------------------------
 # Format boot
-mkfs.fat -F32 "${PARTITION_BOOT}" >> /dev/null
+mkfs.fat -F32 "${PARTITION_BOOT}"
 if ! check_partition "${PARTITION_BOOT}" "vfat"; then
-    echo "[ER] Failed to create boot partition"; exit 1
+    log_error "Failed to create boot partition"; exit 1
 fi
 # Format swap
-mkswap "${PARTITION_SWAP}" >> /dev/null
-swapon "${PARTITION_SWAP}" >> /dev/null
+mkswap "${PARTITION_SWAP}"
+swapon "${PARTITION_SWAP}"
 if ! check_partition "${PARTITION_SWAP}" "swap"; then
-    echo "[ER] Failed to create swap partition"; exit 1
+    log_error "Failed to create swap partition"; exit 1
 fi
 # Format root (Btrfs)
-mkfs.btrfs -f "${PARTITION_ROOT}" >> /dev/null
+mkfs.btrfs -f "${PARTITION_ROOT}"
 if ! check_partition "${PARTITION_ROOT}" "btrfs"; then
-    echo "[ER] Failed to create root partition"; exit 1
+    log_error "Failed to create root partition"; exit 1
 fi
 
 # 2.4) --- Create root BTRFS subvolumes ----------------------------------------
 mount $PARTITION_ROOT /mnt
 btrfs subvolume create /mnt/@
+assert_success "Unable to create subvolume /mnt/@"
 btrfs subvolume create /mnt/@home
+assert_success "Unable to create subvolume /mnt/@home"
 btrfs subvolume create /mnt/@log
+assert_success "Unable to create subvolume /mnt/@log"
 btrfs subvolume create /mnt/@cache
+assert_success "Unable to create subvolume /mnt/@cache"
 btrfs subvolume create /mnt/@snapshots
+assert_success "Unable to create subvolume /mnt/@snapshots"
 umount /mnt
 
 # 2.5) --- Mount ---------------------------------------------------------------
 BTRFS_MOUNT_OPTIONS="noatime,compress-force=zstd:2,space_cache=v2"
 mount -o $BTRFS_MOUNT_OPTIONS,subvol=@ $PARTITION_ROOT /mnt
-mkdir -p /mnt/{boot,home,var/log,var/cache,.snapshots} 
-mount -o $BTRFS_MOUNT_OPTIONS,subvol=@home $PARTITION_ROOT /mnt/home
-mount -o $BTRFS_MOUNT_OPTIONS,subvol=@log $PARTITION_ROOT /mnt/var/log
-mount -o $BTRFS_MOUNT_OPTIONS,subvol=@cache $PARTITION_ROOT /mnt/var/cache
-mount -o $BTRFS_MOUNT_OPTIONS,subvol=@snapshots $PARTITION_ROOT /mnt/.snapshots
-mount $PARTITION_BOOT /mnt/boot
-assert_success "[ER] '$PARTITION_BOOT' failed to mount"
+assert_success "'$PARTITION_BOOT' failed to mount subvolume @"
 
-echo "[OK] Disk partitions have been created and mounted"
-echo
+mkdir -p /mnt/{boot,home,var/log,var/cache,.snapshots} 
+
+mount -o $BTRFS_MOUNT_OPTIONS,subvol=@home $PARTITION_ROOT /mnt/home
+assert_success "'$PARTITION_BOOT' failed to mount subvolume @home"
+
+mount -o $BTRFS_MOUNT_OPTIONS,subvol=@log $PARTITION_ROOT /mnt/var/log
+assert_success "'$PARTITION_BOOT' failed to mount subvolume @log"
+
+mount -o $BTRFS_MOUNT_OPTIONS,subvol=@cache $PARTITION_ROOT /mnt/var/cache
+assert_success "'$PARTITION_BOOT' failed to mount subvolume @cache"
+
+mount -o $BTRFS_MOUNT_OPTIONS,subvol=@snapshots $PARTITION_ROOT /mnt/.snapshots
+assert_success "'$PARTITION_BOOT' failed to mount subvolume @snapshots"
+
+mount $PARTITION_BOOT /mnt/boot
+assert_success "'$PARTITION_BOOT' failed to mount"
+
+log_ok "Disk partitions have been created and mounted"
+log_newline
 
 # 3) === Update mirrors ========================================================
-echo "[--] Updating mirrors..."
-reflector >> /dev/null
-echo "[OK] Mirrors have been updated"
-echo
+log "Updating mirrors..."
+reflector
+assert_success "reflector failed"
+log_ok "Mirrors have been updated"
+log_newline
 
 # 4) === Install kernel ========================================================
-echo "[--] Installing base packages kernel..."
+log "Installing base packages..."
 pacstrap -K /mnt ${BASE_PACKAGES[@]}
-assert_success "[ER] Failed to install base packages -> abort"
-echo "[OK] Base packages have been installed"
-echo
+assert_success "Failed to install base packages"
+log_ok "Base packages have been installed"
+log_newline
 
 # 5) === System configuring ====================================================
 # 5.1) --- fstab ---------------------------------------------------------------
-echo "[--] Generating fstab..."
+log "Generating fstab..."
 genfstab -U /mnt >> /mnt/etc/fstab
-assert_success "[ER] Failed to generate fstab"
-echo "[OK] fstab has been generated"
-echo
+assert_success "Failed to generate fstab"
+log_ok "fstab has been generated"
+log_newline
 
 # 5.2) --- time ----------------------------------------------------------------
-echo "[--] Setting up time..."
+log "Setting up time..."
 ln -sf /mnt/usr/share/zoneinfo/${TIME_ZONE_REGION} /mnt/etc/localtime
-assert_success "[ER] Failed to set time zone"
+assert_success "Failed to set time zone"
 
-arch-chroot /mnt bash -c "hwclock --systohc" >> /dev/null
-assert_success "[ER] Failed to sync clock"
+for_system "hwclock --systohc"
+assert_success "Failed to sync clock"
 
-echo "[OK] Time has been set"
+log_ok "Time has been set"
+log_newline
 
 # 5.3) --- localization --------------------------------------------------------
-echo "[--] Setting up localization..."
+log "Setting up localization..."
 for i in $LOCALES; do
     sed -i "s/#${i}/${i}/g" /mnt/etc/locale.gen
 done
 
-arch-chroot /mnt bash -c "locale-gen" >> /dev/null
-assert_success "[ER] Failed to sync clock"
+for_system "locale-gen"
+assert_success "Failed to generated locale"
 
 for i in $LOCALES; do
     to_check=${i}
     to_check=${to_check/UTF-8/utf8}
-    if ! arch-chroot /mnt bash -c "locale -a" | grep -q "^${to_check}$"; then
-        echo "[ER] ${i} is not generated"; exit 1
+    if ! for_system "locale -a" | grep -q "^${to_check}$"; then
+        log_error "${i} is not generated"; exit 1
     fi
 done
 
 echo "LANG=${LOCALE_LANG}" >> "/mnt/etc/locale.conf"
+assert_success "Failed to set locale.conf: LANG"
 
 # todo: add keyboard layouts after installing KDE
 
-echo "[OK] Localization has been set"
+log_ok "Localization has been set"
+log_newline
 
 # 5.4) --- grub boot loader with timeshift support -----------------------------
-echo "[--] Configuring grub with timeshift support..."
+log "Configuring grub with timeshift support..."
 GRUB_CONFIG="/mnt/etc/default/grub"
+# disable os-prober
 if ! grep -q "GRUB_DISABLE_OS_PROBER" "$GRUB_CONFIG"; then
-    echo "GRUB_DISABLE_OS_PROBER=false" >> "$GRUB_CONFIG"
+    echo "GRUB_DISABLE_OS_PROBER=true" >> "$GRUB_CONFIG"
 else
-    sed -i 's/^GRUB_DISABLE_OS_PROBER=.*/GRUB_DISABLE_OS_PROBER=false/' "$GRUB_CONFIG"
+    sed -i -E 's/^ *#* *GRUB_DISABLE_OS_PROBER=.*/GRUB_DISABLE_OS_PROBER=true/' "$GRUB_CONFIG"
+fi
+if ! grep -q "^GRUB_DISABLE_OS_PROBER=true$" "$GRUB_CONFIG"; then
+    log_error "Failed to disable os-prober in grub"; exit 1
 fi
 
+# add /@ btrfs submodule
 if ! grep -q "GRUB_BTRFS_SUBVOLUME" "$GRUB_CONFIG"; then
     echo 'GRUB_BTRFS_SUBVOLUME="/@"' >> "$GRUB_CONFIG"
 else
-    sed -i 's|^GRUB_BTRFS_SUBVOLUME=.*|GRUB_BTRFS_SUBVOLUME="/@"|' "$GRUB_CONFIG"
+    sed -i -E 's|^ *#* *GRUB_BTRFS_SUBVOLUME=.*|GRUB_BTRFS_SUBVOLUME="/@"|' "$GRUB_CONFIG"
+fi
+if ! grep -q "^GRUB_BTRFS_SUBVOLUME=\"\/@\"$" "$GRUB_CONFIG"; then
+    log_error "Failed to add BTRFS subvolume to grub"; exit 1
 fi
 
-arch-chroot /mnt bash -c "grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB"
-assert_success "[ER] Failed to install grub"
+for_system "grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB"
+assert_success "Failed to install grub"
 
-arch-chroot /mnt bash -c "timeshift --create --comments "Initial snapshot" --tags D"
-assert_success "[ER] Failed to create initial timeshift snapshot"
+for_system "timeshift --create --comments "Initial snapshot" --tags D"
+assert_success "Failed to create initial timeshift snapshot"
 
-arch-chroot /mnt bash -c "grub-mkconfig -o /boot/grub/grub.cfg"
-assert_success "[ER] Failed to make grub config"
+for_system "grub-mkconfig -o /boot/grub/grub.cfg"
+assert_success "Failed to make grub config"
 
-arch-chroot /mnt bash -c "systemctl enable grub-btrfsd.service"
-assert_success "[ER] Failed to enable grub-btrfsd.service"
+for_system "systemctl enable grub-btrfsd.service"
+assert_success "Failed to enable grub-btrfsd.service"
 
-echo "[OK] Grub with timeshift support has been configured"
+log_ok "Grub with timeshift support has been configured"
+log_newline
 
 # 5.5) --- hostname ------------------------------------------------------------
-read -p "[--] Set hostname: " HOSTNAME
+interactively read -p "[--] Set hostname: " HOSTNAME
 echo "${HOSTNAME}" >> /mnt/etc/hostname
-assert_success "[ER] Failed to set hostname"
-echo "[OK] Hostname has been set"
+assert_success "Failed to set hostname"
+log_ok "Hostname has been set"
+log_newline
 
 # 5.6) --- root passwd ---------------------------------------------------------
-echo "[--] Set root password"
-arch-chroot /mnt bash -c "passwd"
-assert_success "[ER] Failed to set root password"
-echo "[OK] root password has been set"
+log "Set root password"
+interactively for_system "passwd"
+assert_success "Failed to set root password"
+log_ok "root password has been set"
+log_newline
 
 # 5.7) --- create user with sudo permissions -----------------------------------
-read -p "[--] Enter your username: " USERNAME
-arch-chroot /mnt bash -c "useradd -m -G wheel -s /bin/bash ${USERNAME}"
-assert_success "[ER] Failed to create a user"
+# create user and add to group wheel for sudo permissions
+interactively read -p "[--] Enter your username: " USERNAME
+for_system "useradd -m -G wheel -s /bin/bash ${USERNAME}"
+assert_success "Failed to create a user"
 
-arch-chroot /mnt bash -c "passwd ${USERNAME}"
-assert_success "[ER] Failed to set ${USERNAME} password"
+# set user password
+interactively for_system "passwd ${USERNAME}"
+assert_success "Failed to set ${USERNAME} password"
 
-# allow sudo for created user
+# allow sudo for wheel group 
 sed -i -E "s/^ *# *%wheel ALL=\(ALL:ALL\) ALL/%wheel ALL=\(ALL:ALL\) ALL/g" /mnt/etc/sudoers
 if ! grep -q "^%wheel ALL=(ALL:ALL) ALL$" "/mnt/etc/sudoers"; then
-    echo "[ER] Failed to add sudo permissions to ${USERNAME}"; exit 1
+    log_error "Failed to add sudo permissions to ${USERNAME}"; exit 1
 fi
 
-echo "[OK] User has been created"
+log_ok "User has been created"
+log_newline
 
 # todo: move
 # enable internet
-arch-chroot /mnt bash -c "systemctl enable NetworkManager.service"
+for_system "systemctl enable NetworkManager.service"
+
+# todo: enable multilib live and installed system, audio/video drivers, xorg-xwayland
+
+cp $LOG_FILE /mnt/home/$USERNAME/$LOG_FILE
 
 # exit cleanup
 umount /mnt/boot
@@ -308,4 +375,4 @@ umount /mnt/var/log
 umount /mnt/home
 umount /mnt
 
-printf "\n\nReboot!!!\n\n"
+log_impl "\n\nDone\nReady for reboot\n\n"
