@@ -1,4 +1,4 @@
-#!/usr/bin/bash
+#!/bin/bash
 # Copyright (c) 2025 Yevhenii Kryvyi
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -20,6 +20,7 @@
 # SOFTWARE.
 
 # ====== Constants =============================================================
+MIRRORS_COUNTRY="Ukraine,"
 TIME_ZONE_REGION="Europe/Kyiv"
 LOCALES="en_US.UTF-8 uk_UA.UTF-8 ru_RU.UTF-8"
 LOCALE_LANG="en_US.UTF-8"
@@ -36,12 +37,18 @@ BASE_PACKAGES=( # will be installed with pacstrap before system configuration
 "inotify-tools" # dependency for grub-btrfsd.service
 "networkmanager" # network manager
 "sudo" # root permissions
+"reflector" # update available mirrors
 )
 
 DESKTOP_ENV_PACKAGES=( # will be installed after system configuration
 )
 
 APPLICATION_PACKAGES=( # will be installed as a last step
+)
+
+SERVICES=(
+"NetworkManager.service" # network
+grub-btrfsd.service # update grub menu with new snapshots
 )
 
 # ====== Logging ===============================================================
@@ -79,15 +86,32 @@ function interactively {
 }
 
 # ====== Helpers ===============================================================
-function for_system() {
-    arch-chroot /mnt bash -c "$@"
-}
-
 function assert_success() {
     if [ $? -ne 0 ]; then
         log_error "$@"; 
         exit 1
     fi
+}
+
+function for_system() {
+    arch-chroot /mnt bash -c "$@"
+}
+
+function with_retry() {
+    MAX_RETRIES=3 
+    attempt=0
+    while (( attempt < MAX_RETRIES )); do
+        "$@"
+        if [[ $? -eq 0 ]]; then
+            log_ok "Done"; break
+        fi
+        ((attempt++))
+        if (( attempt < MAX_RETRIES )); then
+            log_error "Error occured. One more try (${attempt}/${MAX_RETRIES})";  
+        else
+            log_error "No more retries. Abort"; exit 1
+        fi
+    done
 }
 
 function is_uefi_boot_mode() {
@@ -117,7 +141,6 @@ function check_partition() {
 
     return 0
 }
-
 
 # 0) === Check if boot mode is correct =========================================
 if is_uefi_boot_mode; then
@@ -193,16 +216,22 @@ fi
 
 # 2.4) --- Create root BTRFS subvolumes ----------------------------------------
 mount $PARTITION_ROOT /mnt
+
 btrfs subvolume create /mnt/@
-assert_success "Unable to create subvolume /mnt/@"
+assert_success "Failed to create subvolume /mnt/@"
+
 btrfs subvolume create /mnt/@home
-assert_success "Unable to create subvolume /mnt/@home"
+assert_success "Failed to create subvolume /mnt/@home"
+
 btrfs subvolume create /mnt/@log
-assert_success "Unable to create subvolume /mnt/@log"
+assert_success "Failed to create subvolume /mnt/@log"
+
 btrfs subvolume create /mnt/@cache
-assert_success "Unable to create subvolume /mnt/@cache"
+assert_success "Failed to create subvolume /mnt/@cache"
+
 btrfs subvolume create /mnt/@snapshots
-assert_success "Unable to create subvolume /mnt/@snapshots"
+assert_success "Failed to create subvolume /mnt/@snapshots"
+
 umount /mnt
 
 # 2.5) --- Mount ---------------------------------------------------------------
@@ -230,10 +259,21 @@ assert_success "'$PARTITION_BOOT' failed to mount"
 log_ok "Disk partitions have been created and mounted"
 log_newline
 
-# 3) === Update mirrors ========================================================
-log "Updating mirrors..."
-reflector
-assert_success "reflector failed"
+# 3) === Prepare to fetch packages =============================================
+log "Preparing to fetch packages..."
+
+# enable multilib for pacman
+PACMAN_CONFIG="/etc/pacman.conf"
+sed -zi "s|\s*#*\s*\(\[multilib\]\)\n\s*#*\s*\(Include = \/etc\/pacman.d\/mirrorlist\)|\n\n\1\n\2|" "$PACMAN_CONFIG"
+if ! grep -Pzq "\n\[multilib\]\nInclude = \/etc\/pacman.d\/mirrorlist" "$PACMAN_CONFIG"; then
+    log_error "Failed to enable multilib"
+fi
+log_ok "Multilib has been enabled"
+
+MIRROR_LIST="/etc/pacman.d/mirrorlist"
+reflector --save $MIRROR_LIST --country $MIRRORS_COUNTRY --protocol https
+assert_success "Failed to get mirrors"
+
 log_ok "Mirrors have been updated"
 log_newline
 
@@ -242,7 +282,15 @@ log "Installing base packages..."
 pacstrap -K /mnt ${BASE_PACKAGES[@]}
 assert_success "Failed to install base packages"
 log_ok "Base packages have been installed"
-log_newline
+
+cp $PACMAN_CONFIG /mnt/$PACMAN_CONFIG
+assert_success "Failed to persist pacman config"
+
+cp $MIRROR_LIST /mnt/$MIRROR_LIST
+assert_success "Failed to persist mirror list"
+
+log_ok "Pacman configuration has been persisted"
+log_newline 
 
 # 5) === System configuring ====================================================
 # 5.1) --- fstab ---------------------------------------------------------------
@@ -295,33 +343,29 @@ GRUB_CONFIG="/mnt/etc/default/grub"
 if ! grep -q "GRUB_DISABLE_OS_PROBER" "$GRUB_CONFIG"; then
     echo "GRUB_DISABLE_OS_PROBER=true" >> "$GRUB_CONFIG"
 else
-    sed -i -E 's/^ *#* *GRUB_DISABLE_OS_PROBER=.*/GRUB_DISABLE_OS_PROBER=true/' "$GRUB_CONFIG"
+    sed -ir 's/^\s*#*\s*GRUB_DISABLE_OS_PROBER=.*/GRUB_DISABLE_OS_PROBER=true/' "$GRUB_CONFIG"
 fi
 if ! grep -q "^GRUB_DISABLE_OS_PROBER=true$" "$GRUB_CONFIG"; then
     log_error "Failed to disable os-prober in grub"; exit 1
 fi
 
-# add /@ btrfs submodule
-if ! grep -q "GRUB_BTRFS_SUBVOLUME" "$GRUB_CONFIG"; then
-    echo 'GRUB_BTRFS_SUBVOLUME="/@"' >> "$GRUB_CONFIG"
-else
-    sed -i -E 's|^ *#* *GRUB_BTRFS_SUBVOLUME=.*|GRUB_BTRFS_SUBVOLUME="/@"|' "$GRUB_CONFIG"
-fi
-if ! grep -q "^GRUB_BTRFS_SUBVOLUME=\"\/@\"$" "$GRUB_CONFIG"; then
-    log_error "Failed to add BTRFS subvolume to grub"; exit 1
-fi
-
 for_system "grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB"
 assert_success "Failed to install grub"
 
-for_system "timeshift --create --comments "Initial snapshot" --tags D"
+for_system "timeshift --snapshot-device ${PARTITION_ROOT} --btrfs"
+assert_success "Failed to initialize timeshift"
+
+for_system "timeshift --create --comments 'Initial snapshot'"
 assert_success "Failed to create initial timeshift snapshot"
+
+GRUB_BTRFSD_SERVICE_FILE=/mnt/usr/lib/systemd/system/grub-btrfsd.service
+sed -ir 's|^\(ExecStart=/usr/bin/grub-btrfsd\).*$|\1 --syslog --timeshift-auto|' "$GRUB_BTRFSD_SERVICE_FILE"
+if ! grep -q "^ExecStart=/usr/bin/grub-btrfsd --syslog --timeshift-auto$" "$GRUB_BTRFSD_SERVICE_FILE"; then
+    log_error "Failed to update grub-btrfsd.service"; exit 1
+fi
 
 for_system "grub-mkconfig -o /boot/grub/grub.cfg"
 assert_success "Failed to make grub config"
-
-for_system "systemctl enable grub-btrfsd.service"
-assert_success "Failed to enable grub-btrfsd.service"
 
 log_ok "Grub with timeshift support has been configured"
 log_newline
@@ -335,7 +379,7 @@ log_newline
 
 # 5.6) --- root passwd ---------------------------------------------------------
 log "Set root password"
-interactively for_system "passwd"
+with_retry interactively for_system "passwd"
 assert_success "Failed to set root password"
 log_ok "root password has been set"
 log_newline
@@ -347,25 +391,29 @@ for_system "useradd -m -G wheel -s /bin/bash ${USERNAME}"
 assert_success "Failed to create a user"
 
 # set user password
-interactively for_system "passwd ${USERNAME}"
+with_retry interactively for_system "passwd ${USERNAME}"
 assert_success "Failed to set ${USERNAME} password"
 
 # allow sudo for wheel group 
-sed -i -E "s/^ *# *%wheel ALL=\(ALL:ALL\) ALL/%wheel ALL=\(ALL:ALL\) ALL/g" /mnt/etc/sudoers
-if ! grep -q "^%wheel ALL=(ALL:ALL) ALL$" "/mnt/etc/sudoers"; then
+SUDOERS=/mnt/etc/sudoers
+sed -ir "s|^\s*#\s*%wheel ALL=(ALL:ALL) ALL|%wheel ALL=(ALL:ALL) ALL|" "$SUDOERS"
+if ! grep -q "^%wheel ALL=(ALL:ALL) ALL$" "$SUDOERS"; then
     log_error "Failed to add sudo permissions to ${USERNAME}"; exit 1
 fi
 
 log_ok "User has been created"
 log_newline
 
-# todo: move
-# enable internet
-for_system "systemctl enable NetworkManager.service"
+# 5.8) --- enable services -----------------------------------------------------
+log "Enabling services..."
+for service in "${SERVICES[@]}"; do
+    for_system "systemctl enable $service"
+    assert_success "Failed to enable $service"
+done
+log_ok "Services have been enabled"
 
-# todo: enable multilib live and installed system, audio/video drivers, xorg-xwayland
 
-cp $LOG_FILE /mnt/home/$USERNAME/$LOG_FILE
+# todo: audio/video drivers, xorg-xwayland
 
 # exit cleanup
 umount /mnt/boot
