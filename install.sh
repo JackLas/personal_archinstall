@@ -46,6 +46,7 @@ ENVIRONMENT_PACKAGES=( # will be installed after system configuration
 "xorg-xwayland" # X11-Wayland compatibility
 "git" # to build AUR, also for developement
 "base-devel" # to build AUR packages and more
+"rust" # to build paru
 "cups" # printers
 "cups-pdf" # print to pdf
 # --- selected plasma group packages (with a few additions):
@@ -117,23 +118,67 @@ ENVIRONMENT_PACKAGES=( # will be installed after system configuration
 )
 
 APPLICATION_PACKAGES=( # will be installed as a pre-last step
+"kcalc"
+"kamoso"
+"kate"
+"ocular"
+"vlc"
+"spotify-launcher"
+"obs-studio"
+"firefox"
+"gimp"
+"transmission-qt"
+"qemu-full"
+"git"
+"meld"
+"gcc"
+"g++"
+"make"
+"cmake"
+"python3"
+"python-pip"
+"speedtest-cli"
+"jdk-openjdk"
+"jdk21-openjdk"
+"jdk17-openjdk"
+"jdk11-openjdk"
+"jdk8-openjdk"
+"unarchiver"
+"7zip"
+"lutris"
+"steam"
+"prismlauncher"
+"discord"
+"reaper"
+"musescore"
+"solaar"
+"alsa-scarlett-gui"
+"wine"
+"wine-gecko"
+"wine-mono"
+"yabridge"
 )
 
 AUR_PACKAGES=( # additional packages, will be installed as a last step
+"rustdesk"
+"ungoogled-chromium"
+"vscodium"
+"tuxguitar"
 )
 
-SYSTEM_SERVICES=( # will be enabled on system level after all packages installed
+#todo:
+# install asus pacman repo
+# asus kernel
+# asusctl
+# rog-control-center
+
+SERVICES=( # will be enabled on system level after all packages installed
 "NetworkManager" # network
 "grub-btrfsd" # update grub menu with new snapshots
 "sddm" # window manager
 "firewalld" # firewall
 "cups.socket" # printers
 ) 
-
-USER_SERVICES=( # will be enabled on user level after all packages installed
-"pipewire.socket" # audio
-"pipewire-pulse" # audio
-)
 
 # ====== Logging ===================================================================================
 # logfile collects every output
@@ -333,6 +378,7 @@ assert_success "'$PARTITION_BOOT' failed to mount subvolume @log"
 mount -o $BTRFS_MOUNT_OPTIONS,subvol=@cache $PARTITION_ROOT /mnt/var/cache
 assert_success "'$PARTITION_BOOT' failed to mount subvolume @cache"
 
+# todo: remove
 mount -o $BTRFS_MOUNT_OPTIONS,subvol=@snapshots $PARTITION_ROOT /mnt/.snapshots
 assert_success "'$PARTITION_BOOT' failed to mount subvolume @snapshots"
 
@@ -488,29 +534,34 @@ log_ok "User has been created"
 log_newline
 
 # 6) === Installing environment ==================================================================== 
+# 6.1) --- KDE Plasma with additions ---------------------------------------------------------------
 log "Installing environment packages..."
 PACKAGES="${ENVIRONMENT_PACKAGES[@]}"
 for_system "pacman -Syu --noconfirm $PACKAGES"
 assert_success "Failed to install environment packages"
 
-# todo: install yay
+# 6.2) --- Paru for AUR packages -------------------------------------------------------------------
+log "Installing paru..."
+PASSWORDLESS_SUDO="/mnt/etc/sudoers.d/$USERNAME"
+PARU_TMP_REPO="/home/$USERNAME/tmp_paru"
+echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" > $PASSWORDLESS_SUDO
+for_system "su - $USERNAME -c 'git clone https://aur.archlinux.org/paru.git $PARU_TMP_REPO'"
+for_system "su - $USERNAME -c 'makepkg -si --noconfirm -D $PARU_TMP_REPO'"
+rm -rf "$PARU_TMP_REPO"
+rm -rf "$PASSWORDLESS_SUDO"
+for_system "paru --version"
+assert_success "Failed to install paru"
+
+# 7) === Installing applications ===================================================================
+# todo
 
 # Last step) --- enable services -------------------------------------------------------------------
 log "Enabling system services..."
-for service in "${SYSTEM_SERVICES[@]}"; do
+for service in "${SERVICES[@]}"; do
     for_system "systemctl enable $service"
     assert_success "Failed to enable $service"
 done
 log_ok "Services have been enabled"
-
-# todo: doesn't work,
-# log "Enabling user services..."
-# for service in "${USER_SERVICES[@]}"; do
-#     for_system "su - $USERNAME -c 'systemctl --user enable $service'"
-#     assert_success "Failed to enable $service"
-# done
-# log_ok "Services have been enabled"
-
 
 # exit cleanup
 umount /mnt/boot
