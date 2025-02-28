@@ -19,7 +19,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-# ====== Constants =============================================================
+# ====== Constants =================================================================================
 MIRRORS_COUNTRY="Ukraine,"
 TIME_ZONE_REGION="Europe/Kyiv"
 LOCALES="en_US.UTF-8 uk_UA.UTF-8 ru_RU.UTF-8"
@@ -40,18 +40,102 @@ BASE_PACKAGES=( # will be installed with pacstrap before system configuration
 "reflector" # update available mirrors
 )
 
-DESKTOP_ENV_PACKAGES=( # will be installed after system configuration
+ENVIRONMENT_PACKAGES=( # will be installed after system configuration
+"terminator" # terminal
+"sddm" # window manager
+"xorg-xwayland" # X11-Wayland compatibility
+"git" # to build AUR, also for developement
+"base-devel" # to build AUR packages and more
+"cups" # printers
+"cups-pdf" # print to pdf
+# --- selected plasma group packages (with a few additions):
+"plasma-desktop" # KDE Plasma base package
+"plasma-workspace" # core KDE Plasma 
+"plasma-workspace-wallpapers" # wallpapers
+"libplasma" # Plasma
+"bluedevil" # Bluetooth integration
+"breeze" # theme
+"breeze-gtk" # same theme for gtk
+"breeze-plymouth" # theme for theme?
+"kde-gtk-config" # KDE settings for GTK
+"kdecoration" # decorations
+"kgamma" # adjust gamma
+"kmenuedit" # edit menu
+"kde-cli-tools" # utils
+"kdeplasma-addons" # addons
+"kglobalacceld " # shortcuts
+"kinfocenter" # system info
+"kpipewire" # pipewire for KDE
+"kscreen" # screen management
+"libkscreen" # screen management
+"kscreenlocker" # lock screen
+"ksystemstats" # system stats
+"libksysguard" # system monitoring
+"kwayland" # wayland
+"kwin" # windows manager
+"layer-shell-qt" # for wayland
+"milou" # search
+"plasma5support" # porting from KF5/Qt5 to KF6/Qt6
+"plasma-browser-integration" # browser integration
+"plasma-disks" # monitor disks, S.M.A.R.T.
+"plasma-firewall" # firewall GUI
+"firewalld" # firewall
+"plasma-integration" # better integration
+"plasma-nm" # network manager GUI
+"plasma-pa" # audio GUI
+"plasma-systemmonitor" # system monitoring GUI
+"plymouth-kcm" # manage boot theme
+"polkit-kde-agent" # authentication dialogs
+"powerdevil" # power management
+"print-manager" # printers
+"system-config-printer" # printers GUI
+"sddm-kcm" # sddm configuration
+"spectacle" # screenshots
+"systemsettings" # GUI
+"xdg-desktop-portal-kde" # integration
+# --- audio system:
+"pipewire" # main audio package
+"lib32-pipewire" 
+"pipewire-pulse" # compatibility
+"pipewire-alsa" # compatibility
+"pipewire-jack" # compatibility
+"qjackctl" # GUI
+# --- graphical system:
+"mesa"
+"lib32-mesa"
+"vulkan-radeon"
+"lib32-vulkan-radeon"
+"xf86-video-amdgpu"
+# --- fonts:
+"noto-fonts"
+"noto-fonts-emoji"
+"noto-fonts-extra"
+"ttf-liberation"
+"ttf-dejavu"
+# --- dependencies:
+"qt6-multimedia-ffmpeg"
 )
 
-APPLICATION_PACKAGES=( # will be installed as a last step
+APPLICATION_PACKAGES=( # will be installed as a pre-last step
 )
 
-SERVICES=(
-"NetworkManager.service" # network
-grub-btrfsd.service # update grub menu with new snapshots
+AUR_PACKAGES=( # additional packages, will be installed as a last step
 )
 
-# ====== Logging ===============================================================
+SYSTEM_SERVICES=( # will be enabled on system level after all packages installed
+"NetworkManager" # network
+"grub-btrfsd" # update grub menu with new snapshots
+"sddm" # window manager
+"firewalld" # firewall
+"cups.socket" # printers
+) 
+
+USER_SERVICES=( # will be enabled on user level after all packages installed
+"pipewire.socket" # audio
+"pipewire-pulse" # audio
+)
+
+# ====== Logging ===================================================================================
 # logfile collects every output
 # terminal shows only text printed with logXYZ functions
 # commands run via interactively will print in both terminal and logfile
@@ -85,7 +169,7 @@ function interactively {
     "$@" >/dev/tty 2>&1
 }
 
-# ====== Helpers ===============================================================
+# ====== Helpers ===================================================================================
 function assert_success() {
     if [ $? -ne 0 ]; then
         log_error "$@"; 
@@ -103,7 +187,7 @@ function with_retry() {
     while (( attempt < MAX_RETRIES )); do
         "$@"
         if [[ $? -eq 0 ]]; then
-            log_ok "Done"; break
+            break
         fi
         ((attempt++))
         if (( attempt < MAX_RETRIES )); then
@@ -142,22 +226,21 @@ function check_partition() {
     return 0
 }
 
-# 0) === Check if boot mode is correct =========================================
+# 1) === Prepare environment =======================================================================
 if is_uefi_boot_mode; then
     log_ok "Detected UEFI boot mode"
 else
     log_error "Detected unsupported BIOS boot mode"; exit 1
 fi
 
-# 1) === Check Internet connection =============================================
 log "Checking internet connection..."
 # ping -c 4 google.com > /dev/null 2>&1
 assert_success "No internet connection"
 log_ok "Internet connection is established"
 log_newline
 
-# 2) === Partition the disks ===================================================
-# 2.1) --- Select a disk -------------------------------------------------------
+# 2) === Partition the disks =======================================================================
+# 2.1) --- Select a disk ---------------------------------------------------------------------------
 log "Select a disk to install to:"
 interactively lsblk -pdno NAME,SIZE,TYPE
 interactively read -p "Enter the disk to use (e.g., /dev/sda): " DESTINATION_DISK 
@@ -176,7 +259,7 @@ PARTITION_ROOT="${DESTINATION_DISK}3"
 log_ok "Arch Linux will be installed to $DESTINATION_DISK"
 log_newline
 
-# 2.2) --- Partition -----------------------------------------------------------
+# 2.2) --- Partition -------------------------------------------------------------------------------
 log "Preparing disk partitions..."
 
 # Wipe
@@ -196,7 +279,7 @@ parted -s "$DESTINATION_DISK" mkpart primary linux-swap 1GiB 9GiB
 # Root (/) partition (Btrfs, using remaining space)
 parted -s "$DESTINATION_DISK" mkpart primary btrfs 9GiB 100%
 
-# 2.3) --- Format --------------------------------------------------------------
+# 2.3) --- Format ----------------------------------------------------------------------------------
 # Format boot
 mkfs.fat -F32 "${PARTITION_BOOT}"
 if ! check_partition "${PARTITION_BOOT}" "vfat"; then
@@ -214,7 +297,7 @@ if ! check_partition "${PARTITION_ROOT}" "btrfs"; then
     log_error "Failed to create root partition"; exit 1
 fi
 
-# 2.4) --- Create root BTRFS subvolumes ----------------------------------------
+# 2.4) --- Create BTRFS subvolumes ------------------------------------------------------------
 mount $PARTITION_ROOT /mnt
 
 btrfs subvolume create /mnt/@
@@ -234,7 +317,7 @@ assert_success "Failed to create subvolume /mnt/@snapshots"
 
 umount /mnt
 
-# 2.5) --- Mount ---------------------------------------------------------------
+# 2.5) --- Mount -----------------------------------------------------------------------------------
 BTRFS_MOUNT_OPTIONS="noatime,compress-force=zstd:2,space_cache=v2"
 mount -o $BTRFS_MOUNT_OPTIONS,subvol=@ $PARTITION_ROOT /mnt
 assert_success "'$PARTITION_BOOT' failed to mount subvolume @"
@@ -259,7 +342,7 @@ assert_success "'$PARTITION_BOOT' failed to mount"
 log_ok "Disk partitions have been created and mounted"
 log_newline
 
-# 3) === Prepare to fetch packages =============================================
+# 3) === Prepare to fetch packages =================================================================
 log "Preparing to fetch packages..."
 
 # enable multilib for pacman
@@ -277,7 +360,7 @@ assert_success "Failed to get mirrors"
 log_ok "Mirrors have been updated"
 log_newline
 
-# 4) === Install kernel ========================================================
+# 4) === Install kernel ============================================================================
 log "Installing base packages..."
 pacstrap -K /mnt ${BASE_PACKAGES[@]}
 assert_success "Failed to install base packages"
@@ -292,15 +375,15 @@ assert_success "Failed to persist mirror list"
 log_ok "Pacman configuration has been persisted"
 log_newline 
 
-# 5) === System configuring ====================================================
-# 5.1) --- fstab ---------------------------------------------------------------
+# 5) === System configuring ========================================================================
+# 5.1) --- fstab -----------------------------------------------------------------------------------
 log "Generating fstab..."
 genfstab -U /mnt >> /mnt/etc/fstab
 assert_success "Failed to generate fstab"
 log_ok "fstab has been generated"
 log_newline
 
-# 5.2) --- time ----------------------------------------------------------------
+# 5.2) --- time ------------------------------------------------------------------------------------
 log "Setting up time..."
 ln -sf /mnt/usr/share/zoneinfo/${TIME_ZONE_REGION} /mnt/etc/localtime
 assert_success "Failed to set time zone"
@@ -311,7 +394,7 @@ assert_success "Failed to sync clock"
 log_ok "Time has been set"
 log_newline
 
-# 5.3) --- localization --------------------------------------------------------
+# 5.3) --- localization ----------------------------------------------------------------------------
 log "Setting up localization..."
 for i in $LOCALES; do
     sed -i "s/#${i}/${i}/g" /mnt/etc/locale.gen
@@ -336,7 +419,7 @@ assert_success "Failed to set locale.conf: LANG"
 log_ok "Localization has been set"
 log_newline
 
-# 5.4) --- grub boot loader with timeshift support -----------------------------
+# 5.4) --- grub boot loader with timeshift support -------------------------------------------------
 log "Configuring grub with timeshift support..."
 GRUB_CONFIG="/mnt/etc/default/grub"
 # disable os-prober
@@ -370,21 +453,21 @@ assert_success "Failed to make grub config"
 log_ok "Grub with timeshift support has been configured"
 log_newline
 
-# 5.5) --- hostname ------------------------------------------------------------
+# 5.5) --- hostname --------------------------------------------------------------------------------
 interactively read -p "[--] Set hostname: " HOSTNAME
 echo "${HOSTNAME}" >> /mnt/etc/hostname
 assert_success "Failed to set hostname"
 log_ok "Hostname has been set"
 log_newline
 
-# 5.6) --- root passwd ---------------------------------------------------------
+# 5.6) --- root passwd -----------------------------------------------------------------------------
 log "Set root password"
 with_retry interactively for_system "passwd"
 assert_success "Failed to set root password"
 log_ok "root password has been set"
 log_newline
 
-# 5.7) --- create user with sudo permissions -----------------------------------
+# 5.7) --- create user with sudo permissions -------------------------------------------------------
 # create user and add to group wheel for sudo permissions
 interactively read -p "[--] Enter your username: " USERNAME
 for_system "useradd -m -G wheel -s /bin/bash ${USERNAME}"
@@ -404,16 +487,30 @@ fi
 log_ok "User has been created"
 log_newline
 
-# 5.8) --- enable services -----------------------------------------------------
-log "Enabling services..."
-for service in "${SERVICES[@]}"; do
+# 6) === Installing environment ==================================================================== 
+log "Installing environment packages..."
+PACKAGES="${ENVIRONMENT_PACKAGES[@]}"
+for_system "pacman -Syu --noconfirm $PACKAGES"
+assert_success "Failed to install environment packages"
+
+# todo: install yay
+
+# Last step) --- enable services -------------------------------------------------------------------
+log "Enabling system services..."
+for service in "${SYSTEM_SERVICES[@]}"; do
     for_system "systemctl enable $service"
     assert_success "Failed to enable $service"
 done
 log_ok "Services have been enabled"
 
+# todo: doesn't work,
+# log "Enabling user services..."
+# for service in "${USER_SERVICES[@]}"; do
+#     for_system "su - $USERNAME -c 'systemctl --user enable $service'"
+#     assert_success "Failed to enable $service"
+# done
+# log_ok "Services have been enabled"
 
-# todo: audio/video drivers, xorg-xwayland
 
 # exit cleanup
 umount /mnt/boot
