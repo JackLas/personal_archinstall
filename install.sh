@@ -530,6 +530,10 @@ if ! grep -q "^%wheel ALL=(ALL:ALL) ALL$" "$SUDOERS"; then
     log_error "Failed to add sudo permissions to ${USERNAME}"; exit 1
 fi
 
+# temporary enable passwordless sudo for create user, should be deleted on cleanup stage
+PASSWORDLESS_SUDO="/mnt/etc/sudoers.d/$USERNAME"
+echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" > $PASSWORDLESS_SUDO
+
 log_ok "User has been created"
 log_newline
 
@@ -539,18 +543,19 @@ log "Installing environment packages..."
 PACKAGES="${ENVIRONMENT_PACKAGES[@]}"
 for_system "pacman -Syu --noconfirm $PACKAGES"
 assert_success "Failed to install environment packages"
+log_ok "KDE Plasma has been installed"
+log_newline
 
 # 6.2) --- Paru for AUR packages -------------------------------------------------------------------
 log "Installing paru..."
-PASSWORDLESS_SUDO="/mnt/etc/sudoers.d/$USERNAME"
 PARU_TMP_REPO="/home/$USERNAME/tmp_paru"
-echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" > $PASSWORDLESS_SUDO
 for_system "su - $USERNAME -c 'git clone https://aur.archlinux.org/paru.git $PARU_TMP_REPO'"
 for_system "su - $USERNAME -c 'makepkg -si --noconfirm -D $PARU_TMP_REPO'"
 rm -rf "$PARU_TMP_REPO"
-rm -rf "$PASSWORDLESS_SUDO"
 for_system "paru --version"
 assert_success "Failed to install paru"
+log_ok "Paru has been installed"
+log_newline
 
 # 7) === Installing applications ===================================================================
 # todo
@@ -564,6 +569,7 @@ done
 log_ok "Services have been enabled"
 
 # exit cleanup
+rm -rf "$PASSWORDLESS_SUDO"
 umount /mnt/boot
 umount /mnt/.snapshots
 umount /mnt/var/cache
