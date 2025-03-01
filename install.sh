@@ -353,9 +353,6 @@ assert_success "Failed to create subvolume /mnt/@log"
 btrfs subvolume create /mnt/@cache
 assert_success "Failed to create subvolume /mnt/@cache"
 
-btrfs subvolume create /mnt/@snapshots
-assert_success "Failed to create subvolume /mnt/@snapshots"
-
 umount /mnt
 
 # 2.5) --- Mount -----------------------------------------------------------------------------------
@@ -363,7 +360,7 @@ BTRFS_MOUNT_OPTIONS="noatime,compress-force=zstd:2,space_cache=v2"
 mount -o $BTRFS_MOUNT_OPTIONS,subvol=@ $PARTITION_ROOT /mnt
 assert_success "'$PARTITION_BOOT' failed to mount subvolume @"
 
-mkdir -p /mnt/{boot,home,var/log,var/cache,.snapshots} 
+mkdir -p /mnt/{boot,home,var/log,var/cache} 
 
 mount -o $BTRFS_MOUNT_OPTIONS,subvol=@home $PARTITION_ROOT /mnt/home
 assert_success "'$PARTITION_BOOT' failed to mount subvolume @home"
@@ -373,10 +370,6 @@ assert_success "'$PARTITION_BOOT' failed to mount subvolume @log"
 
 mount -o $BTRFS_MOUNT_OPTIONS,subvol=@cache $PARTITION_ROOT /mnt/var/cache
 assert_success "'$PARTITION_BOOT' failed to mount subvolume @cache"
-
-# todo: remove
-mount -o $BTRFS_MOUNT_OPTIONS,subvol=@snapshots $PARTITION_ROOT /mnt/.snapshots
-assert_success "'$PARTITION_BOOT' failed to mount subvolume @snapshots"
 
 mount $PARTITION_BOOT /mnt/boot
 assert_success "'$PARTITION_BOOT' failed to mount"
@@ -579,7 +572,6 @@ log_ok "Password has been set"
 # exit cleanup
 rm -rf "$PASSWORDLESS_SUDO"
 umount /mnt/boot
-umount /mnt/.snapshots
 umount /mnt/var/cache
 umount /mnt/var/log
 umount /mnt/home
