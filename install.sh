@@ -94,6 +94,7 @@ ENVIRONMENT_PACKAGES=( # will be installed after system configuration
 "spectacle" # screenshots
 "systemsettings" # GUI
 "xdg-desktop-portal-kde" # integration
+"kdenetwork-filesharing" # file sharing GUI
 # --- audio system:
 "pipewire" # main audio package
 "lib32-pipewire" 
@@ -118,31 +119,34 @@ ENVIRONMENT_PACKAGES=( # will be installed after system configuration
 )
 
 APPLICATION_PACKAGES=( # will be installed as a pre-last step
+"fastfetch"
+"dolphin"
 "kcalc"
 "kamoso"
 "kate"
-"ocular"
+"okular"
 "vlc"
 "spotify-launcher"
 "obs-studio"
 "firefox"
+"chromium"
 "gimp"
 "transmission-qt"
 "qemu-full"
 "git"
 "meld"
 "gcc"
-"g++"
+"clang"
 "make"
 "cmake"
 "python3"
 "python-pip"
 "speedtest-cli"
 "jdk-openjdk"
-"jdk21-openjdk"
-"jdk17-openjdk"
-"jdk11-openjdk"
-"jdk8-openjdk"
+"jre21-openjdk"
+"jre17-openjdk"
+"jre11-openjdk"
+"jre8-openjdk"
 "unarchiver"
 "7zip"
 "lutris"
@@ -161,7 +165,6 @@ APPLICATION_PACKAGES=( # will be installed as a pre-last step
 
 AUR_PACKAGES=( # additional packages, will be installed as a last step
 "rustdesk"
-"ungoogled-chromium"
 "vscodium"
 "tuxguitar"
 )
@@ -558,7 +561,12 @@ log_ok "Paru has been installed"
 log_newline
 
 # 7) === Installing applications ===================================================================
-# todo
+log "Installing application packages..."
+PACKAGES="${APPLICATION_PACKAGES[@]}"
+for_system "pacman -Syu --noconfirm $PACKAGES"
+assert_success "Failed to install environment packages"
+log_ok "Applications have been installed"
+log_newline
 
 # Last step) --- enable services -------------------------------------------------------------------
 log "Enabling system services..."
@@ -569,12 +577,12 @@ done
 log_ok "Services have been enabled"
 
 # exit cleanup
-rm -rf "$PASSWORDLESS_SUDO"
-umount /mnt/boot
-umount /mnt/.snapshots
-umount /mnt/var/cache
-umount /mnt/var/log
-umount /mnt/home
-umount /mnt
+# rm -rf "$PASSWORDLESS_SUDO"
+# umount /mnt/boot
+# umount /mnt/.snapshots
+# umount /mnt/var/cache
+# umount /mnt/var/log
+# umount /mnt/home
+# umount /mnt
 
 log_impl "\n\nDone\nReady for reboot\n\n"
