@@ -176,12 +176,6 @@ AUR_PACKAGES=( # additional packages, will be installed as a last step
 "tuxguitar"
 )
 
-#todo:
-# install asus pacman repo
-# asus kernel
-# asusctl
-# rog-control-center
-
 SERVICES=( # will be enabled on system level after all packages installed
 "NetworkManager" # network
 "grub-btrfsd" # update grub menu with new snapshots
@@ -260,6 +254,19 @@ function check_partition() {
     fi
 
     return 0
+}
+
+function is_asus_laptop() {
+    local manufacturer chassis_type
+    manufacturer=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null)
+    chassis_type=$(cat /sys/class/dmi/id/chassis_type 2>/dev/null)
+
+    if [[ "$manufacturer" == *"ASUS"* || "$manufacturer" == *"Asus"* ]] && \
+       [[ "$chassis_type" =~ ^(8|9|10)$ ]]; then
+        return 0
+    else
+        return 1
+    fi
 }
 
 # 1) === Prepare environment =======================================================================
@@ -356,7 +363,7 @@ assert_success "Failed to create subvolume /mnt/@cache"
 umount /mnt
 
 # 2.5) --- Mount -----------------------------------------------------------------------------------
-BTRFS_MOUNT_OPTIONS="noatime,compress-force=zstd:2,space_cache=v2"
+BTRFS_MOUNT_OPTIONS="noatime,compress-force=zstd:3,space_cache=v2"
 mount -o $BTRFS_MOUNT_OPTIONS,subvol=@ $PARTITION_ROOT /mnt
 assert_success "'$PARTITION_BOOT' failed to mount subvolume @"
 
@@ -454,7 +461,7 @@ log
 # 5.4) --- grub boot loader with timeshift support -------------------------------------------------
 log "Configuring grub with timeshift support..."
 GRUB_CONFIG="/mnt/etc/default/grub"
-# disable os-prober
+# disable os-prober in grub config
 if ! grep -q "GRUB_DISABLE_OS_PROBER" "$GRUB_CONFIG"; then
     echo "GRUB_DISABLE_OS_PROBER=true" >> "$GRUB_CONFIG"
 else
@@ -462,6 +469,36 @@ else
 fi
 if ! grep -q "^GRUB_DISABLE_OS_PROBER=true$" "$GRUB_CONFIG"; then
     log_error "Failed to disable os-prober in grub"; exit 1
+fi
+
+# enable GRUB_SAVEDEFAULT in grub config
+if ! grep -q "GRUB_SAVEDEFAULT" "$GRUB_CONFIG"; then
+    echo "GRUB_SAVEDEFAULT=true" >> "$GRUB_CONFIG"
+else
+    sed -ir 's/^\s*#*\s*GRUB_SAVEDEFAULT=.*/GRUB_SAVEDEFAULT=true/' "$GRUB_CONFIG"
+fi
+if ! grep -q "^GRUB_SAVEDEFAULT=true$" "$GRUB_CONFIG"; then
+    log_error "Failed to enable GRUB_SAVEDEFAULT in grub"; exit 1
+fi
+
+# set GRUB_DEFAULT to saved in grub config
+if ! grep -q "GRUB_DEFAULT" "$GRUB_CONFIG"; then
+    echo "GRUB_DEFAULT=saved" >> "$GRUB_CONFIG"
+else
+    sed -ir 's/^\s*#*\s*GRUB_DEFAULT=.*/GRUB_DEFAULT=saved/' "$GRUB_CONFIG"
+fi
+if ! grep -q "^GRUB_DEFAULT=saved$" "$GRUB_CONFIG"; then
+    log_error "Failed to set GRUB_DEFAULT to saved in grub"; exit 1
+fi
+
+# disable submenus in grub in grub config
+if ! grep -q "GRUB_DISABLE_SUBMENU" "$GRUB_CONFIG"; then
+    echo "GRUB_DISABLE_SUBMENU=y" >> "$GRUB_CONFIG"
+else
+    sed -ir 's/^\s*#*\s*GRUB_DISABLE_SUBMENU=.*/GRUB_DISABLE_SUBMENU=y/' "$GRUB_CONFIG"
+fi
+if ! grep -q "^GRUB_DISABLE_SUBMENU=y$" "$GRUB_CONFIG"; then
+    log_error "Failed to disable submenu in grub"; exit 1
 fi
 
 for_system "grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB"
@@ -473,6 +510,7 @@ assert_success "Failed to initialize timeshift"
 for_system "timeshift --create --comments 'Initial snapshot'"
 assert_success "Failed to create initial timeshift snapshot"
 
+# update grub-btrfsd.service to support timeshift snapshots
 GRUB_BTRFSD_SERVICE_FILE=/mnt/usr/lib/systemd/system/grub-btrfsd.service
 sed -ir 's|^\(ExecStart=/usr/bin/grub-btrfsd\).*$|\1 --syslog --timeshift-auto|' "$GRUB_BTRFSD_SERVICE_FILE"
 if ! grep -q "^ExecStart=/usr/bin/grub-btrfsd --syslog --timeshift-auto$" "$GRUB_BTRFSD_SERVICE_FILE"; then
@@ -555,6 +593,41 @@ done
 log_ok "Services have been enabled"
 log
 
+if is_asus_laptop; then
+    # according to https://asus-linux.org/guides/arch-guide/ (02.03.2025)
+    
+    log "Detected ASUS laptop, patching the installation..."
+
+    # add specific pacman repo
+    for_system "pacman-key --recv-keys 8F654886F17D497FEFE3DB448B15A6B0E9A3FA35"
+    assert_success "[ASUS] Failed to pacman-key --recv-keys"
+
+    for_system "pacman-key --finger 8F654886F17D497FEFE3DB448B15A6B0E9A3FA35"
+    assert_success "[ASUS] Failed to pacman-key --finger"
+
+    for_system "pacman-key --lsign-key 8F654886F17D497FEFE3DB448B15A6B0E9A3FA35"
+    assert_success "[ASUS] Failed to pacman-key --lsign-key"
+    
+    for_system "pacman-key --finger 8F654886F17D497FEFE3DB448B15A6B0E9A3FA35"
+    assert_success "[ASUS] Failed to pacman-key --finger"
+
+    echo "[g14]" >> /mnt/etc/pacman.conf
+    assert_success "[ASUS] Failed to update pacman.conf"
+
+    echo "Server = https://arch.asus-linux.org" >> /mnt/etc/pacman.conf
+    assert_success "[ASUS] Failed to update pacman.conf"
+
+    # install ASUS specific packages and kernel
+    PACKAGES="asusctl power-profiles-daemon rog-control-center linux-g14 linux-g14-headers"
+    for_system "pacman -Syu --noconfirm ${PACKAGES}"
+    assert_success "[ASUS] Failed to install packages"
+    for_system "systemctl enable power-profiles-daemon.service"
+    assert_success "[ASUS] Failed to enable services"
+
+    # update grub to include new kernel
+    for_system "grub-mkconfig -o /boot/grub/grub.cfg"
+    assert_success "[ASUS] Failed to reconfigure grub"
+fi
 
 # 10) === set passwd ===============================================================================
 # set root password
@@ -569,6 +642,10 @@ with_retry interactively for_system "passwd ${USERNAME}"
 assert_success "Failed to set ${USERNAME} password"
 log_ok "Password has been set"
 
+# Create final snapshot
+for_system "timeshift --create --comments 'Initial snapshot'"
+for_system "grub-mkconfig -o /boot/grub/grub.cfg"
+
 # exit cleanup
 rm -rf "$PASSWORDLESS_SUDO"
 umount /mnt/boot
@@ -579,4 +656,5 @@ umount /mnt
 
 log
 log "Done"
-log "Ready for reboot\n"
+log "Ready for reboot"
+log
