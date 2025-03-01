@@ -116,11 +116,19 @@ ENVIRONMENT_PACKAGES=( # will be installed after system configuration
 "ttf-dejavu"
 # --- dependencies:
 "qt6-multimedia-ffmpeg"
+"qt5-tools"
 )
 
 APPLICATION_PACKAGES=( # will be installed as a pre-last step
 "fastfetch"
+"ark"
+"lzip"
+"lzop"
+"unarchiver"
+"7zip"
 "dolphin"
+"filelight"
+"gwenview"
 "kcalc"
 "kamoso"
 "kate"
@@ -147,8 +155,7 @@ APPLICATION_PACKAGES=( # will be installed as a pre-last step
 "jre17-openjdk"
 "jre11-openjdk"
 "jre8-openjdk"
-"unarchiver"
-"7zip"
+"openssh"
 "lutris"
 "steam"
 "prismlauncher"
@@ -184,40 +191,21 @@ SERVICES=( # will be enabled on system level after all packages installed
 ) 
 
 # ====== Logging ===================================================================================
-# logfile collects every output
-# terminal shows only text printed with logXYZ functions
-# commands run via interactively will print in both terminal and logfile
-
 LOGFILE="install.log.txt"
-rm -f $LOGFILE
-exec 3>&1
-exec > $LOGFILE 2>&1
-
-function log_impl {
-    printf "$@\n" | tee /dev/tty
-}
-
-function log_newline {
-    log_impl
-}
-
-function log {
-    log_impl "[--] $@"
-}
-
-function log_ok {
-    log_impl "[OK] $@"
-}
-
-function log_error {
-    log_impl "[ER] $@"
-}
-
-function interactively {
-    "$@" >/dev/tty 2>&1
-}
+rm -f $LOGFILE # clear last log, just in cases
+exec 3>&1 # redirect printf and echo into stdout stream
+exec > $LOGFILE 2>&1 # redirect every output into LOGFILE
+function log_impl { printf "$@\n" | tee /dev/tty ; } # tee to LOGFILE and terminal
+function log { log_impl "$@"; }
+function log_attention { log "[--] $@"; }
+function log_ok { log "[OK] $@"; }
+function log_error { log "[ER] $@"; }
 
 # ====== Helpers ===================================================================================
+function interactively {
+    $"$@" >/dev/tty 2>&1
+}
+
 function assert_success() {
     if [ $? -ne 0 ]; then
         log_error "$@"; 
@@ -239,7 +227,7 @@ function with_retry() {
         fi
         ((attempt++))
         if (( attempt < MAX_RETRIES )); then
-            log_error "Error occured. One more try (${attempt}/${MAX_RETRIES})";  
+            log "Error occured. One more try (${attempt}/${MAX_RETRIES})";  
         else
             log_error "No more retries. Abort"; exit 1
         fi
@@ -275,21 +263,26 @@ function check_partition() {
 }
 
 # 1) === Prepare environment =======================================================================
+log "Checking environment..."
 if is_uefi_boot_mode; then
     log_ok "Detected UEFI boot mode"
 else
     log_error "Detected unsupported BIOS boot mode"; exit 1
 fi
-
 log "Checking internet connection..."
-# ping -c 4 google.com > /dev/null 2>&1
+ping -c 4 google.com > /dev/null 2>&1
 assert_success "No internet connection"
 log_ok "Internet connection is established"
-log_newline
+log
+
+interactively read -p "[--] Set hostname: " HOSTNAME
+assert_success "Failed to read hostname"
+interactively read -p "[--] Enter your username: " USERNAME
+assert_success "Failed to read username"
 
 # 2) === Partition the disks =======================================================================
 # 2.1) --- Select a disk ---------------------------------------------------------------------------
-log "Select a disk to install to:"
+log_attention "Select a disk to install to:"
 interactively lsblk -pdno NAME,SIZE,TYPE
 interactively read -p "Enter the disk to use (e.g., /dev/sda): " DESTINATION_DISK 
 
@@ -305,7 +298,7 @@ PARTITION_SWAP="${DESTINATION_DISK}2"
 PARTITION_ROOT="${DESTINATION_DISK}3"
 
 log_ok "Arch Linux will be installed to $DESTINATION_DISK"
-log_newline
+log
 
 # 2.2) --- Partition -------------------------------------------------------------------------------
 log "Preparing disk partitions..."
@@ -345,7 +338,7 @@ if ! check_partition "${PARTITION_ROOT}" "btrfs"; then
     log_error "Failed to create root partition"; exit 1
 fi
 
-# 2.4) --- Create BTRFS subvolumes ------------------------------------------------------------
+# 2.4) --- Create BTRFS subvolumes -----------------------------------------------------------------
 mount $PARTITION_ROOT /mnt
 
 btrfs subvolume create /mnt/@
@@ -389,7 +382,7 @@ mount $PARTITION_BOOT /mnt/boot
 assert_success "'$PARTITION_BOOT' failed to mount"
 
 log_ok "Disk partitions have been created and mounted"
-log_newline
+log
 
 # 3) === Prepare to fetch packages =================================================================
 log "Preparing to fetch packages..."
@@ -407,7 +400,7 @@ reflector --save $MIRROR_LIST --country $MIRRORS_COUNTRY --protocol https
 assert_success "Failed to get mirrors"
 
 log_ok "Mirrors have been updated"
-log_newline
+log
 
 # 4) === Install kernel ============================================================================
 log "Installing base packages..."
@@ -422,7 +415,7 @@ cp $MIRROR_LIST /mnt/$MIRROR_LIST
 assert_success "Failed to persist mirror list"
 
 log_ok "Pacman configuration has been persisted"
-log_newline 
+log
 
 # 5) === System configuring ========================================================================
 # 5.1) --- fstab -----------------------------------------------------------------------------------
@@ -430,7 +423,7 @@ log "Generating fstab..."
 genfstab -U /mnt >> /mnt/etc/fstab
 assert_success "Failed to generate fstab"
 log_ok "fstab has been generated"
-log_newline
+log
 
 # 5.2) --- time ------------------------------------------------------------------------------------
 log "Setting up time..."
@@ -441,7 +434,7 @@ for_system "hwclock --systohc"
 assert_success "Failed to sync clock"
 
 log_ok "Time has been set"
-log_newline
+log
 
 # 5.3) --- localization ----------------------------------------------------------------------------
 log "Setting up localization..."
@@ -462,11 +455,8 @@ done
 
 echo "LANG=${LOCALE_LANG}" >> "/mnt/etc/locale.conf"
 assert_success "Failed to set locale.conf: LANG"
-
-# todo: add keyboard layouts after installing KDE
-
 log_ok "Localization has been set"
-log_newline
+log
 
 # 5.4) --- grub boot loader with timeshift support -------------------------------------------------
 log "Configuring grub with timeshift support..."
@@ -500,31 +490,18 @@ for_system "grub-mkconfig -o /boot/grub/grub.cfg"
 assert_success "Failed to make grub config"
 
 log_ok "Grub with timeshift support has been configured"
-log_newline
+log
 
 # 5.5) --- hostname --------------------------------------------------------------------------------
-interactively read -p "[--] Set hostname: " HOSTNAME
 echo "${HOSTNAME}" >> /mnt/etc/hostname
 assert_success "Failed to set hostname"
 log_ok "Hostname has been set"
-log_newline
+log
 
-# 5.6) --- root passwd -----------------------------------------------------------------------------
-log "Set root password"
-with_retry interactively for_system "passwd"
-assert_success "Failed to set root password"
-log_ok "root password has been set"
-log_newline
-
-# 5.7) --- create user with sudo permissions -------------------------------------------------------
-# create user and add to group wheel for sudo permissions
-interactively read -p "[--] Enter your username: " USERNAME
+# 5.6) --- create user with sudo permissions -------------------------------------------------------
+# create user and add to group wheel (for sudo permissions)
 for_system "useradd -m -G wheel -s /bin/bash ${USERNAME}"
 assert_success "Failed to create a user"
-
-# set user password
-with_retry interactively for_system "passwd ${USERNAME}"
-assert_success "Failed to set ${USERNAME} password"
 
 # allow sudo for wheel group 
 SUDOERS=/mnt/etc/sudoers
@@ -538,16 +515,16 @@ PASSWORDLESS_SUDO="/mnt/etc/sudoers.d/$USERNAME"
 echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" > $PASSWORDLESS_SUDO
 
 log_ok "User has been created"
-log_newline
+log
 
 # 6) === Installing environment ==================================================================== 
 # 6.1) --- KDE Plasma with additions ---------------------------------------------------------------
 log "Installing environment packages..."
 PACKAGES="${ENVIRONMENT_PACKAGES[@]}"
-for_system "pacman -Syu --noconfirm $PACKAGES"
+for_system "pacman -Syu --noconfirm --needed $PACKAGES"
 assert_success "Failed to install environment packages"
 log_ok "KDE Plasma has been installed"
-log_newline
+log
 
 # 6.2) --- Paru for AUR packages -------------------------------------------------------------------
 log "Installing paru..."
@@ -558,31 +535,56 @@ rm -rf "$PARU_TMP_REPO"
 for_system "paru --version"
 assert_success "Failed to install paru"
 log_ok "Paru has been installed"
-log_newline
+log
 
 # 7) === Installing applications ===================================================================
 log "Installing application packages..."
 PACKAGES="${APPLICATION_PACKAGES[@]}"
-for_system "pacman -Syu --noconfirm $PACKAGES"
+for_system "pacman -Syu --noconfirm --needed $PACKAGES"
 assert_success "Failed to install environment packages"
 log_ok "Applications have been installed"
-log_newline
+log
 
-# Last step) --- enable services -------------------------------------------------------------------
+# 8) === Installing AUR applications ===============================================================
+log "Installing AUR packages..."
+PACKAGES="${APPLICATION_PACKAGES[@]}"
+for_system "paru -S --noconfirm --needed $PACKAGES"
+assert_success "Failed to install environment packages"
+log_ok "AUR packages have been installed"
+log
+
+# 9) === Enable services ===========================================================================
 log "Enabling system services..."
 for service in "${SERVICES[@]}"; do
     for_system "systemctl enable $service"
     assert_success "Failed to enable $service"
 done
 log_ok "Services have been enabled"
+log
+
+
+# 10) === set passwd ===============================================================================
+# set root password
+log "Set password for user 'root'"
+with_retry interactively for_system "passwd"
+assert_success "Failed to set root password"
+log_ok "Password has been set"
+
+# set user password
+log "Set password for user '${USERNAME}'"
+with_retry interactively for_system "passwd ${USERNAME}"
+assert_success "Failed to set ${USERNAME} password"
+log_ok "Password has been set"
 
 # exit cleanup
-# rm -rf "$PASSWORDLESS_SUDO"
-# umount /mnt/boot
-# umount /mnt/.snapshots
-# umount /mnt/var/cache
-# umount /mnt/var/log
-# umount /mnt/home
-# umount /mnt
+rm -rf "$PASSWORDLESS_SUDO"
+umount /mnt/boot
+umount /mnt/.snapshots
+umount /mnt/var/cache
+umount /mnt/var/log
+umount /mnt/home
+umount /mnt
 
-log_impl "\n\nDone\nReady for reboot\n\n"
+log
+log "Done"
+log "Ready for reboot\n"
