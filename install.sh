@@ -300,9 +300,10 @@ fi
 ls $DESTINATION_DISK > /dev/null 2>&1
 assert_success "'$DESTINATION_DISK' doesn't exist"
 
-PARTITION_BOOT="${DESTINATION_DISK}1"
-PARTITION_SWAP="${DESTINATION_DISK}2"
-PARTITION_ROOT="${DESTINATION_DISK}3"
+# todo: SATA support, current implementation will work only with nvme
+PARTITION_BOOT="${DESTINATION_DISK}p1"
+PARTITION_SWAP="${DESTINATION_DISK}p2"
+PARTITION_ROOT="${DESTINATION_DISK}p3"
 
 log_ok "Arch Linux will be installed to $DESTINATION_DISK"
 log
@@ -506,9 +507,6 @@ assert_success "Failed to install grub"
 
 for_system "timeshift --snapshot-device ${PARTITION_ROOT} --btrfs"
 assert_success "Failed to initialize timeshift"
-
-for_system "timeshift --create --comments 'Initial snapshot'"
-assert_success "Failed to create initial timeshift snapshot"
 
 # update grub-btrfsd.service to support timeshift snapshots
 GRUB_BTRFSD_SERVICE_FILE=/mnt/usr/lib/systemd/system/grub-btrfsd.service
