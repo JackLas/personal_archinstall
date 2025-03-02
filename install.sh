@@ -38,6 +38,8 @@ BASE_PACKAGES=( # will be installed with pacstrap before system configuration
 "networkmanager" # network manager
 "sudo" # root permissions
 "reflector" # update available mirrors
+"amd-ucode" # microcode updates
+"vim" # text editor
 )
 
 ENVIRONMENT_PACKAGES=( # will be installed after system configuration
@@ -46,7 +48,7 @@ ENVIRONMENT_PACKAGES=( # will be installed after system configuration
 "xorg-xwayland" # X11-Wayland compatibility
 "git" # to build AUR, also for developement
 "base-devel" # to build AUR packages and more
-"rust" # to build paru
+"rust" # to build paru, and for developement
 "cups" # printers
 "cups-pdf" # print to pdf
 # --- selected plasma group packages (with a few additions):
@@ -117,6 +119,7 @@ ENVIRONMENT_PACKAGES=( # will be installed after system configuration
 # --- dependencies:
 "qt6-multimedia-ffmpeg"
 "qt5-tools"
+"kdialog"
 )
 
 APPLICATION_PACKAGES=( # will be installed as a pre-last step
@@ -136,7 +139,6 @@ APPLICATION_PACKAGES=( # will be installed as a pre-last step
 "vlc"
 "spotify-launcher"
 "obs-studio"
-"firefox"
 "chromium"
 "gimp"
 "transmission-qt"
@@ -164,25 +166,45 @@ APPLICATION_PACKAGES=( # will be installed as a pre-last step
 "musescore"
 "solaar"
 "alsa-scarlett-gui"
+"yabridge"
+"yabridgectl"
+"realtime-privileges"
 "wine"
 "wine-gecko"
 "wine-mono"
-"yabridge"
+"wine-nine"
+"winetricks"
+"gamescope"
+"gamemode"
+"lib32-gamemode"
+"mangohud"
+"lib32-mangohud"
+"vulkan-tools"
+"goverlay"
 )
 
 AUR_PACKAGES=( # additional packages, will be installed as a last step
 "rustdesk"
 "vscodium"
 "tuxguitar"
+"protontricks"
+"librewolf-bin"
+"protonup-qt"
 )
 
 SERVICES=( # will be enabled on system level after all packages installed
-"NetworkManager" # network
-"grub-btrfsd" # update grub menu with new snapshots
-"sddm" # window manager
-"firewalld" # firewall
+"NetworkManager.service" # network
+"grub-btrfsd.service" # update grub menu with new snapshots
+"sddm.service" # window manager
+"firewalld.service" # firewall
 "cups.socket" # printers
+"bluetooth.service" # bluetooth
 ) 
+
+USER_GROUPS=( # groups to add created user to
+"gamemode"
+"realtime"
+)
 
 # ====== Logging ===================================================================================
 LOGFILE="install.log.txt"
@@ -300,7 +322,6 @@ fi
 ls $DESTINATION_DISK > /dev/null 2>&1
 assert_success "'$DESTINATION_DISK' doesn't exist"
 
-# todo: SATA support, current implementation will work only with nvme
 PARTITION_BOOT="${DESTINATION_DISK}p1"
 PARTITION_SWAP="${DESTINATION_DISK}p2"
 PARTITION_ROOT="${DESTINATION_DISK}p3"
@@ -395,6 +416,17 @@ if ! grep -Pzq "\n\[multilib\]\nInclude = \/etc\/pacman.d\/mirrorlist" "$PACMAN_
     log_error "Failed to enable multilib"
 fi
 log_ok "Multilib has been enabled"
+
+# enable parallel downloads
+if ! grep -q "ParallelDownloads" "$PACMAN_CONFIG"; then
+    echo "ParallelDownloads = 5" >> "$PACMAN_CONFIG"
+else
+    sed -ir 's/^\s*#*\s*ParallelDownloads\s*=.*/ParallelDownloads = 5/' "$PACMAN_CONFIG"
+fi
+if ! grep -q "^ParallelDownloads = 5$" "$PACMAN_CONFIG"; then
+    log_error "Failed to enable parallel downloads for pacman"; exit 1
+fi
+log_ok "Parallel downloads have been enabled"
 
 MIRROR_LIST="/etc/pacman.d/mirrorlist"
 reflector --save $MIRROR_LIST --country $MIRRORS_COUNTRY --protocol https
@@ -502,9 +534,11 @@ if ! grep -q "^GRUB_DISABLE_SUBMENU=y$" "$GRUB_CONFIG"; then
     log_error "Failed to disable submenu in grub"; exit 1
 fi
 
+# grub install
 for_system "grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB"
 assert_success "Failed to install grub"
 
+# timeshift initialization
 for_system "timeshift --snapshot-device ${PARTITION_ROOT} --btrfs"
 assert_success "Failed to initialize timeshift"
 
@@ -522,12 +556,14 @@ log_ok "Grub with timeshift support has been configured"
 log
 
 # 5.5) --- hostname --------------------------------------------------------------------------------
+log "Applying hostname..."
 echo "${HOSTNAME}" >> /mnt/etc/hostname
 assert_success "Failed to set hostname"
 log_ok "Hostname has been set"
 log
 
 # 5.6) --- create user with sudo permissions -------------------------------------------------------
+log "Creating user..."
 # create user and add to group wheel (for sudo permissions)
 for_system "useradd -m -G wheel -s /bin/bash ${USERNAME}"
 assert_success "Failed to create a user"
@@ -560,7 +596,7 @@ log "Installing paru..."
 PARU_TMP_REPO="/home/$USERNAME/tmp_paru"
 for_system "su - $USERNAME -c 'git clone https://aur.archlinux.org/paru.git $PARU_TMP_REPO'"
 for_system "su - $USERNAME -c 'makepkg -si --noconfirm -D $PARU_TMP_REPO'"
-rm -rf "$PARU_TMP_REPO"
+for_system "rm -rf '$PARU_TMP_REPO'"
 for_system "paru --version"
 assert_success "Failed to install paru"
 log_ok "Paru has been installed"
@@ -570,15 +606,15 @@ log
 log "Installing application packages..."
 PACKAGES="${APPLICATION_PACKAGES[@]}"
 for_system "pacman -Syu --noconfirm --needed $PACKAGES"
-assert_success "Failed to install environment packages"
+assert_success "Failed to install application packages"
 log_ok "Applications have been installed"
 log
 
 # 8) === Installing AUR applications ===============================================================
 log "Installing AUR packages..."
-PACKAGES="${APPLICATION_PACKAGES[@]}"
-for_system "paru -S --noconfirm --needed $PACKAGES"
-assert_success "Failed to install environment packages"
+PACKAGES="${AUR_PACKAGES[@]}"
+for_system "su - $USERNAME -c 'paru -S --noconfirm --needed $PACKAGES'"
+assert_success "Failed to install AUR packages"
 log_ok "AUR packages have been installed"
 log
 
@@ -592,7 +628,7 @@ log_ok "Services have been enabled"
 log
 
 if is_asus_laptop; then
-    # according to https://asus-linux.org/guides/arch-guide/ (02.03.2025)
+    # details on https://asus-linux.org/guides/arch-guide/
     
     log "Detected ASUS laptop, patching the installation..."
 
@@ -615,8 +651,11 @@ if is_asus_laptop; then
     echo "Server = https://arch.asus-linux.org" >> /mnt/etc/pacman.conf
     assert_success "[ASUS] Failed to update pacman.conf"
 
+    # as of 02.03.2025 I don't see any advantages of specific kernel for Vivobook S16 (HX 370)
+    # kernel packages: linux-g14 linux-g14-headers
+
     # install ASUS specific packages and kernel
-    PACKAGES="asusctl power-profiles-daemon rog-control-center linux-g14 linux-g14-headers"
+    PACKAGES="asusctl power-profiles-daemon rog-control-center"
     for_system "pacman -Syu --noconfirm ${PACKAGES}"
     assert_success "[ASUS] Failed to install packages"
     for_system "systemctl enable power-profiles-daemon.service"
@@ -627,7 +666,20 @@ if is_asus_laptop; then
     assert_success "[ASUS] Failed to reconfigure grub"
 fi
 
-# 10) === set passwd ===============================================================================
+# 11) === Configuring ============================================================================
+log "Post-installation configuring..."
+
+echo "vm.swappiness=10" > /mnt/etc/sysctl.d/99-swappiness.conf
+assert_success "Failed to reduce swappiness to 10"
+
+for grp in "${USER_GROUPS[@]}"; do
+    for_system "sudo usermod -a -G ${grp} ${USERNAME}"
+    assert_success "Failed to add user '${USERNAME}' to group '${grp}'"
+done
+
+log_ok "Configuring has been done"
+
+# 12) === set passwd ===============================================================================
 # set root password
 log "Set password for user 'root'"
 with_retry interactively for_system "passwd"
@@ -640,12 +692,13 @@ with_retry interactively for_system "passwd ${USERNAME}"
 assert_success "Failed to set ${USERNAME} password"
 log_ok "Password has been set"
 
+# 13) === exit cleanup =============================================================================
+rm -rf "$PASSWORDLESS_SUDO"
+
 # Create final snapshot
 for_system "timeshift --create --comments 'Initial snapshot'"
 for_system "grub-mkconfig -o /boot/grub/grub.cfg"
 
-# exit cleanup
-rm -rf "$PASSWORDLESS_SUDO"
 umount /mnt/boot
 umount /mnt/var/cache
 umount /mnt/var/log
