@@ -20,7 +20,10 @@
 # SOFTWARE.
 
 # ====== Constants =================================================================================
-MIRRORS_COUNTRY="Ukraine,"
+MIRRORS_COUNTRY="Albania,Australia,Austria,Belgium,Canada,Croatia,Czechia,Denmark,\
+Estonia,Finland,France,Germany,Italy,Japan,Latvia,Lithuania,Luxembourg,Netherlands,\
+Norway,Poland,Romania,Slovakia,Slovenia,South Korea,Spain,Sweden,Switzerland,Taiwan,\
+Ukraine,United Kingdom,"
 TIME_ZONE_REGION="Europe/Kyiv"
 LOCALES="en_US.UTF-8 uk_UA.UTF-8 ru_RU.UTF-8"
 LOCALE_LANG="en_US.UTF-8"
@@ -40,6 +43,7 @@ BASE_PACKAGES=( # will be installed with pacstrap before system configuration
 "reflector" # update available mirrors
 "amd-ucode" # microcode updates
 "vim" # text editor
+"os-prober" # to setup dual-boot
 )
 
 ENVIRONMENT_PACKAGES=( # will be installed after system configuration
@@ -66,7 +70,7 @@ ENVIRONMENT_PACKAGES=( # will be installed after system configuration
 "kmenuedit" # edit menu
 "kde-cli-tools" # utils
 "kdeplasma-addons" # addons
-"kglobalacceld " # shortcuts
+"kglobalacceld" # shortcuts
 "kinfocenter" # system info
 "kpipewire" # pipewire for KDE
 "kscreen" # screen management
@@ -291,26 +295,67 @@ function is_asus_laptop() {
     fi
 }
 
+function validate_packages() {
+    local -n packages=$1
+    for package in "${packages[@]}"; do
+        pacman -Ss "$package" > /dev/null 2>&1
+        assert_success "package '$package' doesn't exist"
+    done   
+}
+
 # 1) === Prepare environment =======================================================================
-log "Checking environment..."
+log "Preparing environment, please wait..."
 if is_uefi_boot_mode; then
     log_ok "Detected UEFI boot mode"
 else
     log_error "Detected unsupported BIOS boot mode"; exit 1
 fi
-log "Checking internet connection..."
 ping -c 4 google.com > /dev/null 2>&1
 assert_success "No internet connection"
-log_ok "Internet connection is established"
+log_ok "Internet connection is available"
+
+# enable multilib for pacman
+PACMAN_CONFIG="/etc/pacman.conf"
+sed -zi "s|\s*#*\s*\(\[multilib\]\)\n\s*#*\s*\(Include = \/etc\/pacman.d\/mirrorlist\)|\n\n\1\n\2|" "$PACMAN_CONFIG"
+if ! grep -Pzq "\n\[multilib\]\nInclude = \/etc\/pacman.d\/mirrorlist" "$PACMAN_CONFIG"; then
+    log_error "Failed to enable multilib"
+fi
+log_ok "Multilib has been enabled"
+
+# enable parallel downloads for pacman
+if ! grep -q "ParallelDownloads" "$PACMAN_CONFIG"; then
+    echo "ParallelDownloads = 5" >> "$PACMAN_CONFIG"
+else
+    sed -ir 's/^\s*#*\s*ParallelDownloads\s*=.*/ParallelDownloads = 5/' "$PACMAN_CONFIG"
+fi
+if ! grep -q "^ParallelDownloads = 5$" "$PACMAN_CONFIG"; then
+    log_error "Failed to enable parallel downloads for pacman"; exit 1
+fi
+log_ok "Parallel downloads have been enabled"
+
+# update mirrors for pacman
+MIRROR_LIST="/etc/pacman.d/mirrorlist"
+reflector --save "$MIRROR_LIST" --country "$MIRRORS_COUNTRY" --latest 200 --score 50 --sort rate --protocol https --verbose
+assert_success "Failed to get mirrors"
+log_ok "Mirrors have been updated"
+
+pacman -Sy
+validate_packages BASE_PACKAGES
+validate_packages ENVIRONMENT_PACKAGES
+validate_packages APPLICATION_PACKAGES
+log_ok "Packages have been validated"
+
 log
+
+# 2) === Get user's input ==========================================================================
 
 interactively read -p "[--] Set hostname: " HOSTNAME
 assert_success "Failed to read hostname"
 interactively read -p "[--] Enter your username: " USERNAME
 assert_success "Failed to read username"
 
-# 2) === Partition the disks =======================================================================
-# 2.1) --- Select a disk ---------------------------------------------------------------------------
+# 3) === Partition the disks =======================================================================
+# 3.1) --- Select a disk ---------------------------------------------------------------------------
 log_attention "Select a disk to install to:"
 interactively lsblk -pdno NAME,SIZE,TYPE
 interactively read -p "Enter the disk to use (e.g., /dev/sda): " DESTINATION_DISK 
@@ -329,7 +374,7 @@ PARTITION_ROOT="${DESTINATION_DISK}p3"
 log_ok "Arch Linux will be installed to $DESTINATION_DISK"
 log
 
-# 2.2) --- Partition -------------------------------------------------------------------------------
+# 3.2) --- Partition -------------------------------------------------------------------------------
 log "Preparing disk partitions..."
 
 # Wipe
@@ -349,7 +394,7 @@ parted -s "$DESTINATION_DISK" mkpart primary linux-swap 1GiB 9GiB
 # Root (/) partition (Btrfs, using remaining space)
 parted -s "$DESTINATION_DISK" mkpart primary btrfs 9GiB 100%
 
-# 2.3) --- Format ----------------------------------------------------------------------------------
+# 3.3) --- Format ----------------------------------------------------------------------------------
 # Format boot
 mkfs.fat -F32 "${PARTITION_BOOT}"
 if ! check_partition "${PARTITION_BOOT}" "vfat"; then
@@ -367,7 +412,7 @@ if ! check_partition "${PARTITION_ROOT}" "btrfs"; then
     log_error "Failed to create root partition"; exit 1
 fi
 
-# 2.4) --- Create BTRFS subvolumes -----------------------------------------------------------------
+# 3.4) --- Create BTRFS subvolumes -----------------------------------------------------------------
 mount $PARTITION_ROOT /mnt
 
 btrfs subvolume create /mnt/@
@@ -382,9 +427,11 @@ assert_success "Failed to create subvolume /mnt/@log"
 btrfs subvolume create /mnt/@cache
 assert_success "Failed to create subvolume /mnt/@cache"
 
+# todo: add virtualbox partition
+
 umount /mnt
 
-# 2.5) --- Mount -----------------------------------------------------------------------------------
+# 3.5) --- Mount -----------------------------------------------------------------------------------
 BTRFS_MOUNT_OPTIONS="noatime,compress-force=zstd:3,space_cache=v2"
 mount -o $BTRFS_MOUNT_OPTIONS,subvol=@ $PARTITION_ROOT /mnt
 assert_success "'$PARTITION_BOOT' failed to mount subvolume @"
@@ -400,42 +447,15 @@ assert_success "'$PARTITION_BOOT' failed to mount subvolume @log"
 mount -o $BTRFS_MOUNT_OPTIONS,subvol=@cache $PARTITION_ROOT /mnt/var/cache
 assert_success "'$PARTITION_BOOT' failed to mount subvolume @cache"
 
+# todo: add virtualbox partition
+
 mount $PARTITION_BOOT /mnt/boot
 assert_success "'$PARTITION_BOOT' failed to mount"
 
 log_ok "Disk partitions have been created and mounted"
 log
 
-# 3) === Prepare to fetch packages =================================================================
-log "Preparing to fetch packages..."
-
-# enable multilib for pacman
-PACMAN_CONFIG="/etc/pacman.conf"
-sed -zi "s|\s*#*\s*\(\[multilib\]\)\n\s*#*\s*\(Include = \/etc\/pacman.d\/mirrorlist\)|\n\n\1\n\2|" "$PACMAN_CONFIG"
-if ! grep -Pzq "\n\[multilib\]\nInclude = \/etc\/pacman.d\/mirrorlist" "$PACMAN_CONFIG"; then
-    log_error "Failed to enable multilib"
-fi
-log_ok "Multilib has been enabled"
-
-# enable parallel downloads
-if ! grep -q "ParallelDownloads" "$PACMAN_CONFIG"; then
-    echo "ParallelDownloads = 5" >> "$PACMAN_CONFIG"
-else
-    sed -ir 's/^\s*#*\s*ParallelDownloads\s*=.*/ParallelDownloads = 5/' "$PACMAN_CONFIG"
-fi
-if ! grep -q "^ParallelDownloads = 5$" "$PACMAN_CONFIG"; then
-    log_error "Failed to enable parallel downloads for pacman"; exit 1
-fi
-log_ok "Parallel downloads have been enabled"
-
-MIRROR_LIST="/etc/pacman.d/mirrorlist"
-reflector --save $MIRROR_LIST --country $MIRRORS_COUNTRY --protocol https
-assert_success "Failed to get mirrors"
-
-log_ok "Mirrors have been updated"
-log
-
-# 4) === Install kernel ============================================================================
+# 4) === Install kernel and base packages ==========================================================
 log "Installing base packages..."
 pacstrap -K /mnt ${BASE_PACKAGES[@]}
 assert_success "Failed to install base packages"
@@ -455,6 +475,9 @@ log
 log "Generating fstab..."
 genfstab -U /mnt >> /mnt/etc/fstab
 assert_success "Failed to generate fstab"
+
+# todo: add nocow to virtualbox parition
+
 log_ok "fstab has been generated"
 log
 
@@ -494,15 +517,6 @@ log
 # 5.4) --- grub boot loader with timeshift support -------------------------------------------------
 log "Configuring grub with timeshift support..."
 GRUB_CONFIG="/mnt/etc/default/grub"
-# disable os-prober in grub config
-if ! grep -q "GRUB_DISABLE_OS_PROBER" "$GRUB_CONFIG"; then
-    echo "GRUB_DISABLE_OS_PROBER=true" >> "$GRUB_CONFIG"
-else
-    sed -ir 's/^\s*#*\s*GRUB_DISABLE_OS_PROBER=.*/GRUB_DISABLE_OS_PROBER=true/' "$GRUB_CONFIG"
-fi
-if ! grep -q "^GRUB_DISABLE_OS_PROBER=true$" "$GRUB_CONFIG"; then
-    log_error "Failed to disable os-prober in grub"; exit 1
-fi
 
 # enable GRUB_SAVEDEFAULT in grub config
 if ! grep -q "GRUB_SAVEDEFAULT" "$GRUB_CONFIG"; then
@@ -564,7 +578,7 @@ log
 
 # 5.6) --- create user with sudo permissions -------------------------------------------------------
 log "Creating user..."
-# create user and add to group wheel (for sudo permissions)
+# create user and add to group wheel for sudo permissions
 for_system "useradd -m -G wheel -s /bin/bash ${USERNAME}"
 assert_success "Failed to create a user"
 
@@ -597,6 +611,7 @@ PARU_TMP_REPO="/home/$USERNAME/tmp_paru"
 for_system "su - $USERNAME -c 'git clone https://aur.archlinux.org/paru.git $PARU_TMP_REPO'"
 for_system "su - $USERNAME -c 'makepkg -si --noconfirm -D $PARU_TMP_REPO'"
 for_system "rm -rf '$PARU_TMP_REPO'"
+
 for_system "paru --version"
 assert_success "Failed to install paru"
 log_ok "Paru has been installed"
@@ -677,6 +692,8 @@ for grp in "${USER_GROUPS[@]}"; do
     assert_success "Failed to add user '${USERNAME}' to group '${grp}'"
 done
 
+# todo: virtualbox configuring
+
 log_ok "Configuring has been done"
 
 # 12) === set passwd ===============================================================================
@@ -700,6 +717,7 @@ for_system "timeshift --create --comments 'Initial snapshot'"
 for_system "grub-mkconfig -o /boot/grub/grub.cfg"
 
 umount /mnt/boot
+# todo: umount virtualbox
 umount /mnt/var/cache
 umount /mnt/var/log
 umount /mnt/home
