@@ -31,6 +31,7 @@ LOCALE_LANG="en_US.UTF-8"
 BASE_PACKAGES=( # will be installed with pacstrap before system configuration
 "base" # essential package group for Arch Linux
 "linux" # the latest stable kernel
+"linux-headers" # dependencies to build module for kernel
 "linux-firmware" # drivers
 "efibootmgr" # EFI Boot Manager
 "btrfs-progs" #  BTRFS utils
@@ -55,6 +56,7 @@ ENVIRONMENT_PACKAGES=( # will be installed after system configuration
 "rust" # to build paru, and for developement
 "cups" # printers
 "cups-pdf" # print to pdf
+"miniupnpd" # daemon to enable UPnP port forwarding
 # --- selected plasma group packages (with a few additions):
 "plasma-desktop" # KDE Plasma base package
 "plasma-workspace" # core KDE Plasma 
@@ -116,6 +118,7 @@ ENVIRONMENT_PACKAGES=( # will be installed after system configuration
 "xf86-video-amdgpu"
 # --- fonts:
 "noto-fonts"
+"noto-fonts-cjk"
 "noto-fonts-emoji"
 "noto-fonts-extra"
 "ttf-liberation"
@@ -127,73 +130,79 @@ ENVIRONMENT_PACKAGES=( # will be installed after system configuration
 )
 
 APPLICATION_PACKAGES=( # will be installed as a pre-last step
-"fastfetch"
-"ark"
-"lzip"
-"lzop"
-"unarchiver"
-"7zip"
-"dolphin"
-"filelight"
-"gwenview"
-"kcalc"
-"kamoso"
-"kate"
-"okular"
-"vlc"
-"spotify-launcher"
-"obs-studio"
-"chromium"
-"gimp"
-"transmission-qt"
-"qemu-full"
-"git"
-"meld"
-"gcc"
-"clang"
-"make"
-"cmake"
-"python3"
-"python-pip"
-"speedtest-cli"
-"jdk-openjdk"
-"jre21-openjdk"
-"jre17-openjdk"
-"jre11-openjdk"
-"jre8-openjdk"
-"openssh"
-"lutris"
-"steam"
-"prismlauncher"
-"discord"
-"reaper"
-"musescore"
-"solaar"
-"alsa-scarlett-gui"
-"yabridge"
-"yabridgectl"
-"realtime-privileges"
-"wine"
-"wine-gecko"
-"wine-mono"
-"wine-nine"
-"winetricks"
-"gamescope"
-"gamemode"
-"lib32-gamemode"
-"mangohud"
-"lib32-mangohud"
-"vulkan-tools"
-"goverlay"
+"fastfetch" # info
+"kwalletmanager" # KDE wallet GUI
+"ark" # archives GUI
+"lzip" # archives support
+"lzop" # archives support
+"unarchiver" # archives support
+"7zip" # archives support
+"dolphin" # file explorer GUI
+"filelight" # disk usage GUI
+"gwenview" # image viewer
+"okular" # document viewer
+"pdfslicer" # PDF arranger
+"kcalc" # calculator
+"kamoso" # camera
+"kate" # text editor
+"vlc" # video player
+"spotify-launcher" # music
+"obs-studio" # video recording, streaming
+"chromium" # secondary browser
+"firefox" # primary browser
+"gimp" # image editor
+"transmission-qt" # torrent client
+"git" # development: version control system
+"meld" # development: GUI to fix git conflicts
+"gcc" # development: C++ compiler
+"clang" # development: C++ compiler
+"make" # developement: C++ build system
+"cmake" # development: C++ build system frontent
+"python3" # development: python3 interpreter
+"python-pip" # development: python3 package manager
+"virtualbox" # development: virtual machines
+"virtualbox-host-dkms" # development: virtualbox dependencies
+"virtualbox-guest-iso" # development: virtualbox image for guests
+"jdk-openjdk" # development: the latest java compiler + JRE
+"jre21-openjdk" # Java 21 JRE
+"jre17-openjdk" # Java 17 JRE
+"jre11-openjdk" # Java 11 JRE
+"jre8-openjdk" # Java 8 JRE
+"openssh" # ssh, scp
+"lutris" # gaming
+"steam" # gaming
+"prismlauncher" # gaming
+"gamescope" # gaming: scaling, frame limiting
+"gamemode" # gaming: performance boost
+"lib32-gamemode" # gaming: performance boost
+"mangohud" # gaming: system status
+"lib32-mangohud" # gaming: system status
+"vulkan-tools" # gaming: testing
+"goverlay" # gaming: mangohud settings
+"wine" # run windows apps
+"wine-gecko" # run windows apps
+"wine-mono" # run windows apps
+"wine-nine" # run windows apps
+"winetricks" # run windows apps
+"discord" # communcation
+"reaper" # music production: DAW
+"musescore" # music production: sheets editor
+"yabridge" # music production: Windows VST plugins proxy
+"yabridgectl"  # music production: Windows VST plugins proxy
+"realtime-privileges" # music production: to decrease delay
+"alsa-scarlett-gui" # scarlet audio interface settings
+"solaar" # logitec devices settings
+"speedtest-cli" # utility: speedtest
 )
 
 AUR_PACKAGES=( # additional packages, will be installed as a last step
-"rustdesk"
-"vscodium"
-"tuxguitar"
-"protontricks"
-"librewolf-bin"
-"protonup-qt"
+"rustdesk" # remote desktop controll
+"vscodium" # IDE
+"tuxguitar" # guitar tabs editor
+"protontricks" # gaming: extra dependencies for proton
+"protonup-qt" # extra compatibility tools for steam
+"ventoy" # create bootable USB drive
+"virtualbox-ext-oracle" # extensions for virtualbox
 )
 
 SERVICES=( # will be enabled on system level after all packages installed
@@ -203,11 +212,15 @@ SERVICES=( # will be enabled on system level after all packages installed
 "firewalld.service" # firewall
 "cups.socket" # printers
 "bluetooth.service" # bluetooth
+"miniupnpd.service" # UPnP
 ) 
 
 USER_GROUPS=( # groups to add created user to
+# "wheel" will be added by default for sudo permissions
 "gamemode"
 "realtime"
+"audio"
+"vboxusers"
 )
 
 # ====== Logging ===================================================================================
@@ -304,12 +317,12 @@ function validate_packages() {
 }
 
 # 1) === Prepare environment =======================================================================
-log "Preparing environment, please wait..."
 if is_uefi_boot_mode; then
     log_ok "Detected UEFI boot mode"
 else
     log_error "Detected unsupported BIOS boot mode"; exit 1
 fi
+log "Checking internet connection..."
 ping -c 4 google.com > /dev/null 2>&1
 assert_success "No internet connection"
 log_ok "Internet connection is available"
@@ -334,6 +347,7 @@ fi
 log_ok "Parallel downloads have been enabled"
 
 # update mirrors for pacman
+log "Updating mirrors..."
 MIRROR_LIST="/etc/pacman.d/mirrorlist"
 reflector --save "$MIRROR_LIST" --country "$MIRRORS_COUNTRY" --latest 200 --score 50 --sort rate --protocol https --verbose
 assert_success "Failed to get mirrors"
@@ -509,6 +523,8 @@ for i in $LOCALES; do
     fi
 done
 
+
+# todo: update locale.conf
 echo "LANG=${LOCALE_LANG}" >> "/mnt/etc/locale.conf"
 assert_success "Failed to set locale.conf: LANG"
 log_ok "Localization has been set"
@@ -547,6 +563,8 @@ fi
 if ! grep -q "^GRUB_DISABLE_SUBMENU=y$" "$GRUB_CONFIG"; then
     log_error "Failed to disable submenu in grub"; exit 1
 fi
+
+# todo: grub resolution
 
 # grub install
 for_system "grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB"
@@ -684,15 +702,22 @@ fi
 # 11) === Configuring ============================================================================
 log "Post-installation configuring..."
 
+# performance
 echo "vm.swappiness=10" > /mnt/etc/sysctl.d/99-swappiness.conf
 assert_success "Failed to reduce swappiness to 10"
 
+# user groups
 for grp in "${USER_GROUPS[@]}"; do
     for_system "sudo usermod -a -G ${grp} ${USERNAME}"
     assert_success "Failed to add user '${USERNAME}' to group '${grp}'"
 done
 
-# todo: virtualbox configuring
+# virtual box
+# todo: virtualbox configuring: 
+# add vboxdrv to kernel modules
+# /usr/lib/modules-load.d/virtualbox-host-dkms.conf -> /dev/null
+
+# todo: gamescope
 
 log_ok "Configuring has been done"
 
