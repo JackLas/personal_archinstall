@@ -20,6 +20,11 @@
 # SOFTWARE.
 
 # ====== Constants =================================================================================
+PARTITION_BOOT_END="1GiB"
+PARTITION_SWAP_END="9GiB"
+PARTITION_ROOT_END="90%" # 10% for dual-boot windows
+# [- boot -> 1GiB|-- swap -----> 9GiB|-- root ---------------------------------> 90%|-- 10% free --]
+
 MIRRORS_COUNTRY="Albania,Australia,Austria,Belgium,Canada,Croatia,Czechia,Denmark,\
 Estonia,Finland,France,Germany,Italy,Japan,Latvia,Lithuania,Luxembourg,Netherlands,\
 Norway,Poland,Romania,Slovakia,Slovenia,South Korea,Spain,Sweden,Switzerland,Taiwan,\
@@ -212,7 +217,7 @@ SERVICES=( # will be enabled on system level after all packages installed
 "firewalld.service" # firewall
 "cups.socket" # printers
 "bluetooth.service" # bluetooth
-"miniupnpd.service" # UPnP
+#"miniupnpd.service" # UPnP - is it safe to enable dy default?
 ) 
 
 USER_GROUPS=( # groups to add created user to
@@ -353,10 +358,14 @@ reflector --save "$MIRROR_LIST" --country "$MIRRORS_COUNTRY" --latest 200 --scor
 assert_success "Failed to get mirrors"
 log_ok "Mirrors have been updated"
 
+# check packages whether they exist before installation process
+log "Validating installing packages..."
 pacman -Sy
 validate_packages BASE_PACKAGES
 validate_packages ENVIRONMENT_PACKAGES
 validate_packages APPLICATION_PACKAGES
+# todo: check aur packages with curl
+
 log_ok "Packages have been validated"
 
 log
@@ -398,15 +407,15 @@ sgdisk --zap-all "$DESTINATION_DISK"
 # Create a new GPT partition table
 parted -s "$DESTINATION_DISK" mklabel gpt
 
-# /boot partition (1GB, FAT32 for UEFI)
-parted -s "$DESTINATION_DISK" mkpart primary fat32 1MiB 1GiB
+# /boot partition (FAT32 for UEFI)
+parted -s "$DESTINATION_DISK" mkpart primary fat32 1MiB "${PARTITION_BOOT_END}"
 parted -s "$DESTINATION_DISK" set 1 esp on
 
-# Swap partition (8GB)
-parted -s "$DESTINATION_DISK" mkpart primary linux-swap 1GiB 9GiB
+# Swap partition 
+parted -s "$DESTINATION_DISK" mkpart primary linux-swap "${PARTITION_BOOT_END}" "${PARTITION_SWAP_END}"
 
-# Root (/) partition (Btrfs, using remaining space)
-parted -s "$DESTINATION_DISK" mkpart primary btrfs 9GiB 100%
+# Root (/) partition (BTRFS)
+parted -s "$DESTINATION_DISK" mkpart primary btrfs "${PARTITION_SWAP_END}" "${PARTITION_ROOT_END}"
 
 # 3.3) --- Format ----------------------------------------------------------------------------------
 # Format boot
@@ -441,16 +450,19 @@ assert_success "Failed to create subvolume /mnt/@log"
 btrfs subvolume create /mnt/@cache
 assert_success "Failed to create subvolume /mnt/@cache"
 
-# todo: add virtualbox partition
+btrfs subvolume create /mnt/@vm
+assert_success "Failed to create subvolume /mnt/@vm"
 
 umount /mnt
 
 # 3.5) --- Mount -----------------------------------------------------------------------------------
-BTRFS_MOUNT_OPTIONS="noatime,compress-force=zstd:3,space_cache=v2"
+BTRFS_COMPRESSION_OPTION="compress-force=zstd:3"
+BTRFS_MOUNT_OPTIONS="noatime,${BTRFS_COMPRESSION_OPTION},space_cache=v2"
+
 mount -o $BTRFS_MOUNT_OPTIONS,subvol=@ $PARTITION_ROOT /mnt
 assert_success "'$PARTITION_BOOT' failed to mount subvolume @"
 
-mkdir -p /mnt/{boot,home,var/log,var/cache} 
+mkdir -p /mnt/{boot,home,var/log,var/cache,vm} 
 
 mount -o $BTRFS_MOUNT_OPTIONS,subvol=@home $PARTITION_ROOT /mnt/home
 assert_success "'$PARTITION_BOOT' failed to mount subvolume @home"
@@ -461,7 +473,8 @@ assert_success "'$PARTITION_BOOT' failed to mount subvolume @log"
 mount -o $BTRFS_MOUNT_OPTIONS,subvol=@cache $PARTITION_ROOT /mnt/var/cache
 assert_success "'$PARTITION_BOOT' failed to mount subvolume @cache"
 
-# todo: add virtualbox partition
+mount -o $BTRFS_MOUNT_OPTIONS,subvol=@vm $PARTITION_ROOT /mnt/vm
+assert_success "'$PARTITION_BOOT' failed to mount subvolume @vm"
 
 mount $PARTITION_BOOT /mnt/boot
 assert_success "'$PARTITION_BOOT' failed to mount"
@@ -487,10 +500,16 @@ log
 # 5) === System configuring ========================================================================
 # 5.1) --- fstab -----------------------------------------------------------------------------------
 log "Generating fstab..."
-genfstab -U /mnt >> /mnt/etc/fstab
+
+FSTAB="/mnt/etc/fstab"
+genfstab -U /mnt >> "${FSTAB}"
 assert_success "Failed to generate fstab"
 
-# todo: add nocow to virtualbox parition
+# patch generated fstab to replace compression with nodatacow for @vm subvolume
+sed -zi "s|\(.*\/vm.*\)${BTRFS_COMPRESSION_OPTION}\(.*\/@vm.*\)|\1nodatacow\2|" "${FSTAB}"
+if ! grep -q "^.*/vm.*nodatacow.*/@vm.*$" "${FSTAB}"; then
+    echo "Failed to set nodatacow for @vm"
+fi
 
 log_ok "fstab has been generated"
 log
@@ -742,7 +761,7 @@ for_system "timeshift --create --comments 'Initial snapshot'"
 for_system "grub-mkconfig -o /boot/grub/grub.cfg"
 
 umount /mnt/boot
-# todo: umount virtualbox
+umount /mnt/vm
 umount /mnt/var/cache
 umount /mnt/var/log
 umount /mnt/home
