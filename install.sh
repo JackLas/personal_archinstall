@@ -29,9 +29,15 @@ MIRRORS_COUNTRY="Albania,Australia,Austria,Belgium,Canada,Croatia,Czechia,Denmar
 Estonia,Finland,France,Germany,Italy,Japan,Latvia,Lithuania,Luxembourg,Netherlands,\
 Norway,Poland,Romania,Slovakia,Slovenia,South Korea,Spain,Sweden,Switzerland,Taiwan,\
 Ukraine,United Kingdom,"
+
 TIME_ZONE_REGION="Europe/Kyiv"
 LOCALES="en_US.UTF-8 uk_UA.UTF-8 ru_RU.UTF-8"
-LOCALE_LANG="en_US.UTF-8"
+LOCALE_CONF="\
+LANG=en_US.UTF-8
+LC_TIME=C
+LC_MONETARY=uk_UA.UTF-8
+LC_PAPER=uk_UA.UTF-8
+LC_MEASUREMENT=uk_UA.UTF-8"
 
 BASE_PACKAGES=( # will be installed with pacstrap before system configuration
 "base" # essential package group for Arch Linux
@@ -206,7 +212,7 @@ AUR_PACKAGES=( # additional packages, will be installed as a last step
 "tuxguitar" # guitar tabs editor
 "protontricks" # gaming: extra dependencies for proton
 "protonup-qt" # extra compatibility tools for steam
-"ventoy" # create bootable USB drive
+"ventoy-bin" # create bootable USB drive
 "virtualbox-ext-oracle" # extensions for virtualbox
 )
 
@@ -321,6 +327,34 @@ function validate_packages() {
     done   
 }
 
+function update_config() {
+    CONFIG_FILE=$1
+    FIRST_HALF_VALUE=$2
+    SECOND_HALD_VALUE=$3
+
+    if ! grep -q "${FIRST_HALF_VALUE}" "${CONFIG_FILE}"; then
+        echo "${FIRST_HALF_VALUE}${SECOND_HALD_VALUE}" >> "${CONFIG_FILE}"
+    else
+        sed -ir "s/^\s*#*\s*${FIRST_HALF_VALUE}.*/${FIRST_HALF_VALUE}${SECOND_HALD_VALUE}/" "${CONFIG_FILE}"
+    fi
+    if ! grep -q "^${FIRST_HALF_VALUE}${SECOND_HALD_VALUE}$" "${CONFIG_FILE}"; then
+        return 1 # fail
+    fi
+    return 0 # success
+}
+
+function ask_user() {
+    local prompt="$1"
+    while true; do
+        interactively read -rp "$prompt (yes/no): " answer
+        case "$answer" in
+            [Yy]|[Yy][Ee][Ss]) echo 0; return ;;
+            [Nn]|[Nn][Oo]) echo 1; return ;;
+            *) echo "Please answer yes or no." ;;
+        esac
+    done
+}
+
 # 1) === Prepare environment =======================================================================
 if is_uefi_boot_mode; then
     log_ok "Detected UEFI boot mode"
@@ -367,7 +401,6 @@ validate_packages APPLICATION_PACKAGES
 # todo: check aur packages with curl
 
 log_ok "Packages have been validated"
-
 log
 
 # 2) === Get user's input ==========================================================================
@@ -376,6 +409,8 @@ interactively read -p "[--] Set hostname: " HOSTNAME
 assert_success "Failed to read hostname"
 interactively read -p "[--] Enter your username: " USERNAME
 assert_success "Failed to read username"
+
+SHOULD_INSTALL_AUR_PACAKGES=$(ask_user "Do you want to install AUR packages?")
 
 # 3) === Partition the disks =======================================================================
 # 3.1) --- Select a disk ---------------------------------------------------------------------------
@@ -542,10 +577,8 @@ for i in $LOCALES; do
     fi
 done
 
-
-# todo: update locale.conf
-echo "LANG=${LOCALE_LANG}" >> "/mnt/etc/locale.conf"
-assert_success "Failed to set locale.conf: LANG"
+echo "${LOCALE_CONF}" >> "/mnt/etc/locale.conf"
+assert_success "Failed to set locale.conf"
 log_ok "Localization has been set"
 log
 
@@ -553,37 +586,25 @@ log
 log "Configuring grub with timeshift support..."
 GRUB_CONFIG="/mnt/etc/default/grub"
 
-# enable GRUB_SAVEDEFAULT in grub config
-if ! grep -q "GRUB_SAVEDEFAULT" "$GRUB_CONFIG"; then
-    echo "GRUB_SAVEDEFAULT=true" >> "$GRUB_CONFIG"
-else
-    sed -ir 's/^\s*#*\s*GRUB_SAVEDEFAULT=.*/GRUB_SAVEDEFAULT=true/' "$GRUB_CONFIG"
-fi
-if ! grep -q "^GRUB_SAVEDEFAULT=true$" "$GRUB_CONFIG"; then
+# make GRUB remember the last selection
+if ! update_config "$GRUB_CONFIG" "GRUB_SAVEDEFAULT" "=true"; then
     log_error "Failed to enable GRUB_SAVEDEFAULT in grub"; exit 1
 fi
 
-# set GRUB_DEFAULT to saved in grub config
-if ! grep -q "GRUB_DEFAULT" "$GRUB_CONFIG"; then
-    echo "GRUB_DEFAULT=saved" >> "$GRUB_CONFIG"
-else
-    sed -ir 's/^\s*#*\s*GRUB_DEFAULT=.*/GRUB_DEFAULT=saved/' "$GRUB_CONFIG"
-fi
-if ! grep -q "^GRUB_DEFAULT=saved$" "$GRUB_CONFIG"; then
+# make GRUB use last selected item as default on start
+if ! update_config "$GRUB_CONFIG" "GRUB_DEFAULT" "=saved"; then
     log_error "Failed to set GRUB_DEFAULT to saved in grub"; exit 1
 fi
 
-# disable submenus in grub in grub config
-if ! grep -q "GRUB_DISABLE_SUBMENU" "$GRUB_CONFIG"; then
-    echo "GRUB_DISABLE_SUBMENU=y" >> "$GRUB_CONFIG"
-else
-    sed -ir 's/^\s*#*\s*GRUB_DISABLE_SUBMENU=.*/GRUB_DISABLE_SUBMENU=y/' "$GRUB_CONFIG"
-fi
-if ! grep -q "^GRUB_DISABLE_SUBMENU=y$" "$GRUB_CONFIG"; then
+# disable submenus in grub
+if ! update_config "$GRUB_CONFIG" "GRUB_DISABLE_SUBMENU" "=y"; then
     log_error "Failed to disable submenu in grub"; exit 1
 fi
 
-# todo: grub resolution
+# set lower resolution for better readibilty 
+if ! update_config "$GRUB_CONFIG" "GRUB_GFXMODE" "=1024×768"; then
+    log_error "Failed to set lower resolution in grub"; exit 1
+fi
 
 # grub install
 for_system "grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB"
@@ -626,9 +647,9 @@ if ! grep -q "^%wheel ALL=(ALL:ALL) ALL$" "$SUDOERS"; then
     log_error "Failed to add sudo permissions to ${USERNAME}"; exit 1
 fi
 
-# temporary enable passwordless sudo for create user, should be deleted on cleanup stage
+# temporary enable passwordless sudo for create pacman and paru, should be deleted on cleanup stage
 PASSWORDLESS_SUDO="/mnt/etc/sudoers.d/$USERNAME"
-echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" > $PASSWORDLESS_SUDO
+echo "$USERNAME ALL=(ALL) NOPASSWD: /usr/bin/paru, /usr/bin/pacman" > $PASSWORDLESS_SUDO
 
 log_ok "User has been created"
 log
@@ -663,22 +684,16 @@ log_ok "Applications have been installed"
 log
 
 # 8) === Installing AUR applications ===============================================================
-log "Installing AUR packages..."
-PACKAGES="${AUR_PACKAGES[@]}"
-for_system "su - $USERNAME -c 'paru -S --noconfirm --needed $PACKAGES'"
-assert_success "Failed to install AUR packages"
-log_ok "AUR packages have been installed"
-log
+if [[ $SHOULD_INSTALL_AUR_PACAKGES -eq 0 ]]; then
+    log "Installing AUR packages..."
+    PACKAGES="${AUR_PACKAGES[@]}"
+    for_system "su - $USERNAME -c 'paru -S --noconfirm --needed $PACKAGES'"
+    assert_success "Failed to install AUR packages"
+    log_ok "AUR packages have been installed"
+    log
+fi
 
-# 9) === Enable services ===========================================================================
-log "Enabling system services..."
-for service in "${SERVICES[@]}"; do
-    for_system "systemctl enable $service"
-    assert_success "Failed to enable $service"
-done
-log_ok "Services have been enabled"
-log
-
+# 9) === Hardware specific installation ===========================================================
 if is_asus_laptop; then
     # details on https://asus-linux.org/guides/arch-guide/
     
@@ -704,10 +719,9 @@ if is_asus_laptop; then
     assert_success "[ASUS] Failed to update pacman.conf"
 
     # as of 02.03.2025 I don't see any advantages of specific kernel for Vivobook S16 (HX 370)
-    # kernel packages: linux-g14 linux-g14-headers
 
     # install ASUS specific packages and kernel
-    PACKAGES="asusctl power-profiles-daemon rog-control-center"
+    PACKAGES="linux-g14 linux-g14-headers asusctl power-profiles-daemon rog-control-center"
     for_system "pacman -Syu --noconfirm ${PACKAGES}"
     assert_success "[ASUS] Failed to install packages"
     for_system "systemctl enable power-profiles-daemon.service"
@@ -718,29 +732,36 @@ if is_asus_laptop; then
     assert_success "[ASUS] Failed to reconfigure grub"
 fi
 
-# 11) === Configuring ============================================================================
+# 10) === Configuring ============================================================================
 log "Post-installation configuring..."
 
-# performance
-echo "vm.swappiness=10" > /mnt/etc/sysctl.d/99-swappiness.conf
-assert_success "Failed to reduce swappiness to 10"
+# services
+log "Enabling system services..."
+for service in "${SERVICES[@]}"; do
+    for_system "systemctl enable $service"
+    assert_success "Failed to enable $service"
+done
+log_ok "Services have been enabled"
+log
 
-# user groups
+# user's groups
 for grp in "${USER_GROUPS[@]}"; do
     for_system "sudo usermod -a -G ${grp} ${USERNAME}"
     assert_success "Failed to add user '${USERNAME}' to group '${grp}'"
 done
 
-# virtual box
-# todo: virtualbox configuring: 
-# add vboxdrv to kernel modules
-# /usr/lib/modules-load.d/virtualbox-host-dkms.conf -> /dev/null
+# performance
+echo "vm.swappiness=10" > /mnt/etc/sysctl.d/99-swappiness.conf
+assert_success "Failed to reduce swappiness to 10"
 
-# todo: gamescope
+# gamescope:
+for_system 'setcap "CAP_SYS_NICE=eip" $(which gamescope)'
+assert_success "Failed to set priority for gamescope"
 
 log_ok "Configuring has been done"
+log
 
-# 12) === set passwd ===============================================================================
+# 11) === set passwd ===============================================================================
 # set root password
 log "Set password for user 'root'"
 with_retry interactively for_system "passwd"
@@ -753,7 +774,7 @@ with_retry interactively for_system "passwd ${USERNAME}"
 assert_success "Failed to set ${USERNAME} password"
 log_ok "Password has been set"
 
-# 13) === exit cleanup =============================================================================
+# 12) === exit cleanup =============================================================================
 rm -rf "$PASSWORDLESS_SUDO"
 
 # Create final snapshot
