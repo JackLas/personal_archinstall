@@ -98,8 +98,8 @@ ENVIRONMENT_PACKAGES=( # will be installed after system configuration
 "plasma5support" # porting from KF5/Qt5 to KF6/Qt6
 "plasma-browser-integration" # browser integration
 "plasma-disks" # monitor disks, S.M.A.R.T.
+"ufw" # firewall
 "plasma-firewall" # firewall GUI
-"firewalld" # firewall
 "plasma-integration" # better integration
 "plasma-nm" # network manager GUI
 "plasma-pa" # audio GUI
@@ -163,6 +163,7 @@ APPLICATION_PACKAGES=( # will be installed as a pre-last step
 "firefox" # primary browser
 "gimp" # image editor
 "transmission-qt" # torrent client
+"code" # development: IDE
 "git" # development: version control system
 "meld" # development: GUI to fix git conflicts
 "gcc" # development: C++ compiler
@@ -204,15 +205,16 @@ APPLICATION_PACKAGES=( # will be installed as a pre-last step
 "alsa-scarlett-gui" # scarlet audio interface settings
 "solaar" # logitec devices settings
 "speedtest-cli" # utility: speedtest
+"mkvtoolnix-gui" # utility: managing MKV content
 )
 
 AUR_PACKAGES=( # additional packages, will be installed as a last step
-"rustdesk" # remote desktop controll
-"vscodium" # IDE
+"rustdesk" # remote desktop control
 "tuxguitar" # guitar tabs editor
 "protontricks" # gaming: extra dependencies for proton
 "protonup-qt" # extra compatibility tools for steam
 "ventoy-bin" # create bootable USB drive
+"timeshift-autosnap" # auto snapshot before system upgrade
 "virtualbox-ext-oracle" # extensions for virtualbox
 )
 
@@ -220,10 +222,9 @@ SERVICES=( # will be enabled on system level after all packages installed
 "NetworkManager.service" # network
 "grub-btrfsd.service" # update grub menu with new snapshots
 "sddm.service" # window manager
-"firewalld.service" # firewall
+"ufw.service" # firewall
 "cups.socket" # printers
 "bluetooth.service" # bluetooth
-#"miniupnpd.service" # UPnP - is it safe to enable dy default?
 ) 
 
 USER_GROUPS=( # groups to add created user to
@@ -243,11 +244,18 @@ function log_impl { printf "$@\n" | tee /dev/tty ; } # tee to LOGFILE and termin
 function log { log_impl "$@"; }
 function log_attention { log "[--] $@"; }
 function log_ok { log "[OK] $@"; }
-function log_error { log "[ER] $@"; }
+function log_warn { log "[WARNING] $@"; }
+function log_error { log "[ERROR] $@"; }
 
 # ====== Helpers ===================================================================================
 function interactively {
     $"$@" >/dev/tty 2>&1
+}
+
+function check_success() {
+    if [ $? -ne 0 ]; then
+        log_warn "$@"; 
+    fi 
 }
 
 function assert_success() {
@@ -350,12 +358,18 @@ function ask_user() {
         case "$answer" in
             [Yy]|[Yy][Ee][Ss]) echo 0; return ;;
             [Nn]|[Nn][Oo]) echo 1; return ;;
-            *) echo "Please answer yes or no." ;;
+            *) ;;
         esac
     done
 }
 
-# 1) === Prepare environment =======================================================================
+# 1) === Check environment =======================================================================
+if [[ ! -f /run/archiso ]] && ! findmnt -n -o FSTYPE / | grep -q overlay; then
+    interactively echo "Should be run only in Arch Live environment -> abort"
+    rm -f $LOGFILE
+    exit 1
+fi
+
 if is_uefi_boot_mode; then
     log_ok "Detected UEFI boot mode"
 else
@@ -365,6 +379,36 @@ log "Checking internet connection..."
 ping -c 4 google.com > /dev/null 2>&1
 assert_success "No internet connection"
 log_ok "Internet connection is available"
+
+# 2) === Get user's input ==========================================================================
+
+interactively read -p "[--] Set hostname: " HOSTNAME
+assert_success "Failed to read hostname"
+interactively read -p "[--] Enter your username: " USERNAME
+assert_success "Failed to read username"
+
+SHOULD_INSTALL_AUR_PACAKGES=$(ask_user "Do you want to install AUR packages?")
+
+log_attention "Select a disk to install to:"
+interactively lsblk -pdno NAME,SIZE,TYPE
+interactively read -p "Enter the disk to use (e.g., /dev/sda): " DESTINATION_DISK 
+
+if [ -z $DESTINATION_DISK ]; then
+    log_error "'$DESTINATION_DISK' doesn't exist"; exit 1
+fi
+
+ls $DESTINATION_DISK > /dev/null 2>&1
+assert_success "'$DESTINATION_DISK' doesn't exist"
+
+PARTITION_BOOT="${DESTINATION_DISK}p1"
+PARTITION_SWAP="${DESTINATION_DISK}p2"
+PARTITION_ROOT="${DESTINATION_DISK}p3"
+
+log_ok "Arch Linux will be installed to $DESTINATION_DISK"
+log
+
+# 3) === Prepare for installation ==================================================================
+log "Preparing for installation..."
 
 # enable multilib for pacman
 PACMAN_CONFIG="/etc/pacman.conf"
@@ -403,36 +447,8 @@ validate_packages APPLICATION_PACKAGES
 log_ok "Packages have been validated"
 log
 
-# 2) === Get user's input ==========================================================================
-
-interactively read -p "[--] Set hostname: " HOSTNAME
-assert_success "Failed to read hostname"
-interactively read -p "[--] Enter your username: " USERNAME
-assert_success "Failed to read username"
-
-SHOULD_INSTALL_AUR_PACAKGES=$(ask_user "Do you want to install AUR packages?")
-
-# 3) === Partition the disks =======================================================================
-# 3.1) --- Select a disk ---------------------------------------------------------------------------
-log_attention "Select a disk to install to:"
-interactively lsblk -pdno NAME,SIZE,TYPE
-interactively read -p "Enter the disk to use (e.g., /dev/sda): " DESTINATION_DISK 
-
-if [ -z $DESTINATION_DISK ]; then
-    log_error "'$DESTINATION_DISK' doesn't exist"; exit 1
-fi
-
-ls $DESTINATION_DISK > /dev/null 2>&1
-assert_success "'$DESTINATION_DISK' doesn't exist"
-
-PARTITION_BOOT="${DESTINATION_DISK}p1"
-PARTITION_SWAP="${DESTINATION_DISK}p2"
-PARTITION_ROOT="${DESTINATION_DISK}p3"
-
-log_ok "Arch Linux will be installed to $DESTINATION_DISK"
-log
-
-# 3.2) --- Partition -------------------------------------------------------------------------------
+# 4) === Partition the disks =======================================================================
+# 4.1) --- Partition -------------------------------------------------------------------------------
 log "Preparing disk partitions..."
 
 # Wipe
@@ -452,7 +468,7 @@ parted -s "$DESTINATION_DISK" mkpart primary linux-swap "${PARTITION_BOOT_END}" 
 # Root (/) partition (BTRFS)
 parted -s "$DESTINATION_DISK" mkpart primary btrfs "${PARTITION_SWAP_END}" "${PARTITION_ROOT_END}"
 
-# 3.3) --- Format ----------------------------------------------------------------------------------
+# 4.2) --- Format ----------------------------------------------------------------------------------
 # Format boot
 mkfs.fat -F32 "${PARTITION_BOOT}"
 if ! check_partition "${PARTITION_BOOT}" "vfat"; then
@@ -470,7 +486,7 @@ if ! check_partition "${PARTITION_ROOT}" "btrfs"; then
     log_error "Failed to create root partition"; exit 1
 fi
 
-# 3.4) --- Create BTRFS subvolumes -----------------------------------------------------------------
+# 4.3) --- Create BTRFS subvolumes -----------------------------------------------------------------
 mount $PARTITION_ROOT /mnt
 
 btrfs subvolume create /mnt/@
@@ -490,7 +506,7 @@ assert_success "Failed to create subvolume /mnt/@vm"
 
 umount /mnt
 
-# 3.5) --- Mount -----------------------------------------------------------------------------------
+# 4.4) --- Mount -----------------------------------------------------------------------------------
 BTRFS_COMPRESSION_OPTION="compress-force=zstd:3"
 BTRFS_MOUNT_OPTIONS="noatime,${BTRFS_COMPRESSION_OPTION},space_cache=v2"
 
@@ -517,7 +533,7 @@ assert_success "'$PARTITION_BOOT' failed to mount"
 log_ok "Disk partitions have been created and mounted"
 log
 
-# 4) === Install kernel and base packages ==========================================================
+# 5) === Install kernel and base packages ==========================================================
 log "Installing base packages..."
 pacstrap -K /mnt ${BASE_PACKAGES[@]}
 assert_success "Failed to install base packages"
@@ -532,8 +548,8 @@ assert_success "Failed to persist mirror list"
 log_ok "Pacman configuration has been persisted"
 log
 
-# 5) === System configuring ========================================================================
-# 5.1) --- fstab -----------------------------------------------------------------------------------
+# 6) === System configuring ========================================================================
+# 6.1) --- fstab -----------------------------------------------------------------------------------
 log "Generating fstab..."
 
 FSTAB="/mnt/etc/fstab"
@@ -549,7 +565,7 @@ fi
 log_ok "fstab has been generated"
 log
 
-# 5.2) --- time ------------------------------------------------------------------------------------
+# 6.2) --- time ------------------------------------------------------------------------------------
 log "Setting up time..."
 ln -sf /mnt/usr/share/zoneinfo/${TIME_ZONE_REGION} /mnt/etc/localtime
 assert_success "Failed to set time zone"
@@ -560,7 +576,7 @@ assert_success "Failed to sync clock"
 log_ok "Time has been set"
 log
 
-# 5.3) --- localization ----------------------------------------------------------------------------
+# 6.3) --- localization ----------------------------------------------------------------------------
 log "Setting up localization..."
 for i in $LOCALES; do
     sed -i "s/#${i}/${i}/g" /mnt/etc/locale.gen
@@ -582,7 +598,7 @@ assert_success "Failed to set locale.conf"
 log_ok "Localization has been set"
 log
 
-# 5.4) --- grub boot loader with timeshift support -------------------------------------------------
+# 6.4) --- grub boot loader with timeshift support -------------------------------------------------
 log "Configuring grub with timeshift support..."
 GRUB_CONFIG="/mnt/etc/default/grub"
 
@@ -627,14 +643,14 @@ assert_success "Failed to make grub config"
 log_ok "Grub with timeshift support has been configured"
 log
 
-# 5.5) --- hostname --------------------------------------------------------------------------------
+# 6.5) --- hostname --------------------------------------------------------------------------------
 log "Applying hostname..."
 echo "${HOSTNAME}" >> /mnt/etc/hostname
 assert_success "Failed to set hostname"
 log_ok "Hostname has been set"
 log
 
-# 5.6) --- create user with sudo permissions -------------------------------------------------------
+# 6.6) --- create user with sudo permissions -------------------------------------------------------
 log "Creating user..."
 # create user and add to group wheel for sudo permissions
 for_system "useradd -m -G wheel -s /bin/bash ${USERNAME}"
@@ -654,8 +670,8 @@ echo "$USERNAME ALL=(ALL) NOPASSWD: /usr/bin/paru, /usr/bin/pacman" > $PASSWORDL
 log_ok "User has been created"
 log
 
-# 6) === Installing environment ==================================================================== 
-# 6.1) --- KDE Plasma with additions ---------------------------------------------------------------
+# 7) === Installing environment ==================================================================== 
+# 7.1) --- KDE Plasma with additions ---------------------------------------------------------------
 log "Installing environment packages..."
 PACKAGES="${ENVIRONMENT_PACKAGES[@]}"
 for_system "pacman -Syu --noconfirm --needed $PACKAGES"
@@ -663,7 +679,7 @@ assert_success "Failed to install environment packages"
 log_ok "KDE Plasma has been installed"
 log
 
-# 6.2) --- Paru for AUR packages -------------------------------------------------------------------
+# 7.2) --- Paru for AUR packages -------------------------------------------------------------------
 log "Installing paru..."
 PARU_TMP_REPO="/home/$USERNAME/tmp_paru"
 for_system "su - $USERNAME -c 'git clone https://aur.archlinux.org/paru.git $PARU_TMP_REPO'"
@@ -675,7 +691,7 @@ assert_success "Failed to install paru"
 log_ok "Paru has been installed"
 log
 
-# 7) === Installing applications ===================================================================
+# 8) === Installing applications ===================================================================
 log "Installing application packages..."
 PACKAGES="${APPLICATION_PACKAGES[@]}"
 for_system "pacman -Syu --noconfirm --needed $PACKAGES"
@@ -683,17 +699,17 @@ assert_success "Failed to install application packages"
 log_ok "Applications have been installed"
 log
 
-# 8) === Installing AUR applications ===============================================================
+# 9) === Installing AUR applications ===============================================================
 if [[ $SHOULD_INSTALL_AUR_PACAKGES -eq 0 ]]; then
     log "Installing AUR packages..."
     PACKAGES="${AUR_PACKAGES[@]}"
     for_system "su - $USERNAME -c 'paru -S --noconfirm --needed $PACKAGES'"
-    assert_success "Failed to install AUR packages"
+    check_success "Failed to install AUR packages" # don't break installation because of AUR issues
     log_ok "AUR packages have been installed"
     log
 fi
 
-# 9) === Hardware specific installation ===========================================================
+# 10) === Hardware specific installation ===========================================================
 if is_asus_laptop; then
     # details on https://asus-linux.org/guides/arch-guide/
     
@@ -732,36 +748,41 @@ if is_asus_laptop; then
     assert_success "[ASUS] Failed to reconfigure grub"
 fi
 
-# 10) === Configuring ============================================================================
+# 11) === Configuring ============================================================================
 log "Post-installation configuring..."
 
 # services
-log "Enabling system services..."
 for service in "${SERVICES[@]}"; do
     for_system "systemctl enable $service"
     assert_success "Failed to enable $service"
 done
-log_ok "Services have been enabled"
-log
+log_ok "Required services have been enabled"
 
 # user's groups
 for grp in "${USER_GROUPS[@]}"; do
     for_system "sudo usermod -a -G ${grp} ${USERNAME}"
     assert_success "Failed to add user '${USERNAME}' to group '${grp}'"
 done
+log_ok "User '$USERNAME' hase been added to required groups"
 
 # performance
 echo "vm.swappiness=10" > /mnt/etc/sysctl.d/99-swappiness.conf
 assert_success "Failed to reduce swappiness to 10"
+log_ok "Swappiness has been set to 10"
 
-# gamescope:
+# gamescope
 for_system 'setcap "CAP_SYS_NICE=eip" $(which gamescope)'
 assert_success "Failed to set priority for gamescope"
+
+# virtual box
+# don't load kernel modules by default ("sudp vboxreload will be required before run virtual box")
+for_system "sudo ln -sf /dev/null /usr/lib/modules-load.d/virtualbox-host-dkms.conf"
+log_ok "Autoload of VirtualBox drivers has been disabled"
 
 log_ok "Configuring has been done"
 log
 
-# 11) === set passwd ===============================================================================
+# 12) === set passwd ===============================================================================
 # set root password
 log "Set password for user 'root'"
 with_retry interactively for_system "passwd"
@@ -774,7 +795,7 @@ with_retry interactively for_system "passwd ${USERNAME}"
 assert_success "Failed to set ${USERNAME} password"
 log_ok "Password has been set"
 
-# 12) === exit cleanup =============================================================================
+# 13) === exit cleanup =============================================================================
 rm -rf "$PASSWORDLESS_SUDO"
 
 # Create final snapshot
