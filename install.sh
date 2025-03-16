@@ -63,11 +63,11 @@ ENVIRONMENT_PACKAGES=( # will be installed after system configuration
 "sddm" # window manager
 "xorg-xwayland" # X11-Wayland compatibility
 "git" # to build AUR, also for developement
+"tk" # gitk: git GUI
 "base-devel" # to build AUR packages and more
 "rust" # to build paru, and for developement
 "cups" # printers
 "cups-pdf" # print to pdf
-"miniupnpd" # daemon to enable UPnP port forwarding
 # --- selected plasma group packages (with a few additions):
 "plasma-desktop" # KDE Plasma base package
 "plasma-workspace" # core KDE Plasma 
@@ -216,6 +216,7 @@ AUR_PACKAGES=( # additional packages, will be installed as a last step
 "ventoy-bin" # create bootable USB drive
 "timeshift-autosnap" # auto snapshot before system upgrade
 "virtualbox-ext-oracle" # extensions for virtualbox
+"otf-edwin" # font for music sheets (MuseScore)
 )
 
 SERVICES=( # will be enabled on system level after all packages installed
